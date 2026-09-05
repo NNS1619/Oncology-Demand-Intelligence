@@ -88,7 +88,39 @@ def require_data(df, name):
 def safe_columns(df, columns):
     return [col for col in columns if col in df.columns]
 
+SCENARIO_CLIENT_LABELS = {
+    "Base case": "Base planning forecast",
+    "Access downside": "Uniform access downside",
+    "Earlier strong competitor pressure": "Stronger overlapping competitor pressure",
+    "Epidemiology upside": "Eligible population upside",
+    "Persistence downside": "Persistence downside",
+    "Therapy D East supply constraint": "Therapy D East supply constraint",
+    "Combined downside": "Combined downside planning case",
+}
 
+SCENARIO_CLIENT_EXPLANATIONS = {
+    "Base case": "Current governed planning forecast with no scenario adjustment.",
+    "Access downside": "A simple stress test where market access falls equally across therapies and regions.",
+    "Earlier strong competitor pressure": "Tests stronger competitive pressure against therapies serving overlapping biomarker-positive patients.",
+    "Epidemiology upside": "Tests higher eligible patient volume.",
+    "Persistence downside": "Tests lower treatment continuation and fewer active patient-months.",
+    "Therapy D East supply constraint": "Tests limited observed sales for Therapy D in East only.",
+    "Combined downside": "Tests multiple planning risks happening together.",
+}
+
+
+def add_client_scenario_labels(df):
+    out = df.copy()
+
+    out["client_scenario_name"] = out["scenario_name"].map(
+        SCENARIO_CLIENT_LABELS
+    ).fillna(out["scenario_name"])
+
+    out["client_explanation"] = out["scenario_name"].map(
+        SCENARIO_CLIENT_EXPLANATIONS
+    ).fillna(out.get("description", ""))
+
+    return out
 # ------------------------------------------------------------
 # Load data
 # ------------------------------------------------------------
@@ -383,97 +415,153 @@ with tab_scenarios:
 
     st.markdown(
         """
-Scenario analysis uses the patient-informed numerical engine. The app displays
-already-calculated scenario outputs from Notebook 3.
+Scenario analysis answers planning questions that model accuracy alone cannot answer.
+The numerical engine has already calculated these results. This tab translates them
+into business planning language.
 """
     )
 
-    scenario_names = scenario_summary["scenario_name"].tolist()
+    scenario_summary_display = add_client_scenario_labels(scenario_summary)
 
-    selected_scenario = st.selectbox(
-        "Scenario",
-        scenario_names,
+    scenario_options = scenario_summary_display[
+        ["scenario_name", "client_scenario_name"]
+    ].drop_duplicates()
+
+    selected_client_scenario = st.selectbox(
+        "Planning scenario",
+        scenario_options["client_scenario_name"].tolist(),
         index=0,
     )
 
-    selected_scenario_row = scenario_summary.loc[
-        scenario_summary["scenario_name"] == selected_scenario
+    selected_scenario = scenario_options.loc[
+        scenario_options["client_scenario_name"] == selected_client_scenario,
+        "scenario_name",
     ].iloc[0]
 
-    col1, col2, col3, col4 = st.columns(4)
+    selected_scenario_row = scenario_summary_display.loc[
+        scenario_summary_display["scenario_name"] == selected_scenario
+    ].iloc[0]
+
+    st.info(selected_scenario_row["client_explanation"])
+
+    col1, col2, col3 = st.columns(3)
 
     col1.metric(
-        "Scenario Forecast",
-        num(selected_scenario_row["scenario_forecast_units"]),
+        "Baseline Demand Forecast",
+        num(selected_scenario_row["baseline_forecast_units"]),
     )
 
     col2.metric(
-        "Change vs Baseline",
-        num(selected_scenario_row["absolute_change_units"]),
+        "Scenario Demand Forecast",
+        num(selected_scenario_row["scenario_forecast_units"]),
+        delta=num(selected_scenario_row["absolute_change_units"]),
     )
 
     col3.metric(
-        "Percent Change",
+        "Change vs Baseline",
         pct(selected_scenario_row["percent_change"]),
     )
 
-    col4.metric(
-        "P10 / P50 / P90",
-        f"{num(selected_scenario_row['p10'])} / {num(selected_scenario_row['p50'])} / {num(selected_scenario_row['p90'])}",
+    st.markdown("### Planning Range")
+
+    st.caption(
+        "Conservative, expected, and upside planning estimates correspond to "
+        "P10, P50, and P90 from the Monte Carlo uncertainty simulation."
     )
 
-    st.write(selected_scenario_row.get("description", ""))
+    range_col1, range_col2, range_col3 = st.columns(3)
 
-    plot_df = scenario_summary.loc[
-        scenario_summary["scenario_name"] != "Base case"
+    range_col1.metric(
+        "Conservative Planning Case",
+        num(selected_scenario_row["p10"]),
+        help="P10: 10% of simulated outcomes were below this value.",
+    )
+
+    range_col2.metric(
+        "Expected Planning Case",
+        num(selected_scenario_row["p50"]),
+        help="P50: median simulated outcome.",
+    )
+
+    range_col3.metric(
+        "Upside Planning Case",
+        num(selected_scenario_row["p90"]),
+        help="P90: 90% of simulated outcomes were below this value.",
+    )
+
+    plot_df = scenario_summary_display.loc[
+        scenario_summary_display["scenario_name"] != "Base case"
     ].copy()
 
     fig = px.bar(
         plot_df,
         x="absolute_change_units",
-        y="scenario_name",
+        y="client_scenario_name",
         orientation="h",
-        title="Scenario Impact vs Baseline",
+        title="Scenario Impact vs Baseline Demand Forecast",
+        labels={
+            "absolute_change_units": "Change in forecasted units",
+            "client_scenario_name": "Planning scenario",
+        },
     )
 
     fig.add_vline(x=0, line_width=1, line_color="black")
-
     st.plotly_chart(fig, use_container_width=True)
 
     fig_uncertainty = go.Figure()
 
     fig_uncertainty.add_trace(
         go.Scatter(
-            x=scenario_summary["scenario_name"],
-            y=scenario_summary["p50"],
+            x=scenario_summary_display["client_scenario_name"],
+            y=scenario_summary_display["p50"],
             mode="markers",
             error_y=dict(
                 type="data",
                 symmetric=False,
-                array=scenario_summary["p90"] - scenario_summary["p50"],
-                arrayminus=scenario_summary["p50"] - scenario_summary["p10"],
+                array=scenario_summary_display["p90"] - scenario_summary_display["p50"],
+                arrayminus=scenario_summary_display["p50"] - scenario_summary_display["p10"],
             ),
-            name="P10-P90 interval",
+            name="Planning range",
         )
     )
 
     fig_uncertainty.update_layout(
-        title="Scenario Forecast Uncertainty",
-        xaxis_title="Scenario",
-        yaxis_title="Forecasted Units",
+        title="Scenario Planning Range",
+        xaxis_title="Planning scenario",
+        yaxis_title="Forecasted demand units",
     )
 
     st.plotly_chart(fig_uncertainty, use_container_width=True)
 
-    if not therapy_scenario_summary.empty:
-        st.markdown("### Therapy-Level Impact")
+    st.markdown("### Therapy-Level Impact")
 
+    if not therapy_scenario_summary.empty:
         therapy_rows = therapy_scenario_summary.loc[
             therapy_scenario_summary["scenario_name"] == selected_scenario
         ].copy()
 
-        st.dataframe(therapy_rows.round(4), use_container_width=True)
+        therapy_rows = therapy_rows.rename(
+            columns={
+                "therapy": "Therapy",
+                "baseline_forecast_units": "Baseline forecast",
+                "scenario_forecast_units": "Scenario forecast",
+                "absolute_change_units": "Change in units",
+                "percent_change": "Percent change",
+            }
+        )
 
+        st.dataframe(
+            therapy_rows.round(4),
+            use_container_width=True,
+        )
+
+        st.caption(
+            "For uniform access downside, percentage changes are expected to look similar "
+            "across therapies because the same access multiplier is applied broadly. "
+            "The more useful business signal is which therapy carries the largest absolute unit impact."
+        )
+    else:
+        st.info("Therapy-level scenario output file not found.")
 
 # ------------------------------------------------------------
 # Tab 5: Evidence & Explanation
