@@ -27,15 +27,7 @@ VECTOR_STORE_DIR = PROJECT_ROOT / "rag" / "vector_store"
 # ------------------------------------------------------------
 
 def configure_google_api_key():
-    """
-    Works in both local development and Streamlit Cloud.
-
-    Local:
-        .env file with GOOGLE_API_KEY=...
-
-    Streamlit Cloud:
-        App secrets with GOOGLE_API_KEY="..."
-    """
+   
 
     load_dotenv()
 
@@ -56,7 +48,7 @@ def configure_google_api_key():
 
     if not os.getenv("GOOGLE_API_KEY"):
         raise RuntimeError(
-            "GOOGLE_API_KEY is missing. Add it to Streamlit secrets or a local .env file."
+            "GOOGLE_API_KEY is missing. Add it to Streamlit secrets."
         )
 
 
@@ -105,15 +97,7 @@ def candidate_chat_models():
 
 
 def normalize_llm_text(content):
-    """
-    Converts Gemini/LangChain response content into clean display text.
-
-    Some Gemini responses can return content as:
-        [{"type": "text", "text": "...", "extras": {...}}]
-
-    The app should display only the text.
-    """
-
+    
     if isinstance(content, str):
         return content.strip()
 
