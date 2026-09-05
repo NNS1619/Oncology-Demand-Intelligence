@@ -3,6 +3,7 @@
 # Gemini + LangChain + FAISS
 # ============================================================
 
+import os
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -27,11 +28,31 @@ def get_embeddings_model():
     )
 
 
-def get_chat_model():
+def get_chat_model(model_name):
     return ChatGoogleGenerativeAI(
-        model="gemini-1.5-flash",
+        model=model_name,
         temperature=0,
     )
+
+
+def candidate_chat_models():
+    
+    configured_model = os.getenv("GEMINI_CHAT_MODEL")
+
+    models = []
+
+    if configured_model:
+        models.append(configured_model)
+
+    models.extend(
+        [
+            "gemini-3.5-flash",
+            "gemini-3.0-flash",
+            "gemini-flash-latest",
+        ]
+    )
+
+    return list(dict.fromkeys(models))
 
 
 def load_evidence_documents():
@@ -76,8 +97,6 @@ def split_documents(documents):
 def build_vector_store():
     """
     Builds and saves FAISS from rag/evidence_docs/*.md.
-
-    This creates real vector embeddings using Gemini.
     """
 
     load_dotenv()
@@ -102,8 +121,6 @@ def build_vector_store():
 def load_vector_store():
     """
     Loads FAISS if present. If absent, builds it from evidence docs.
-
-    On Streamlit Cloud, this means the first RAG click may take longer.
     """
 
     load_dotenv()
@@ -169,6 +186,35 @@ Write a clear business explanation with:
 """
 
 
+def invoke_gemini_with_fallback(prompt):
+    """
+    Tries available Gemini chat models until one works.
+
+    This handles cases where one model name is unavailable for a specific key.
+    """
+
+    errors = []
+
+    for model_name in candidate_chat_models():
+        try:
+            llm = get_chat_model(model_name)
+            response = llm.invoke(prompt)
+
+            return {
+                "content": response.content,
+                "model_used": model_name,
+            }
+
+        except Exception as error:
+            errors.append(f"{model_name}: {type(error).__name__}")
+
+    raise RuntimeError(
+        "No Gemini chat model worked. Tried: "
+        + "; ".join(errors)
+        + ". Check your Gemini API key, model access, and Streamlit secrets."
+    )
+
+
 def explain_scenario_with_rag(scenario_context, user_question=None, k=4):
     """
     Boundary:
@@ -192,12 +238,11 @@ def explain_scenario_with_rag(scenario_context, user_question=None, k=4):
         evidence_text=evidence_text,
     )
 
-    llm = get_chat_model()
-
-    response = llm.invoke(prompt)
+    response = invoke_gemini_with_fallback(prompt)
 
     return {
-        "answer": response.content,
+        "answer": response["content"],
+        "model_used": response["model_used"],
         "retrieved_evidence": documents,
         "evidence_text": evidence_text,
     }
