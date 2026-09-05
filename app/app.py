@@ -28,8 +28,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 try:
-    if "OPENAI_API_KEY" in st.secrets:
-        os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
+    if "GOOGLE_API_KEY" in st.secrets:
+        os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
 except Exception:
     pass
 
