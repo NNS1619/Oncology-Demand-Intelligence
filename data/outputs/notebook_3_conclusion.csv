@@ -1,0 +1,5 @@
+question,answer
+When is history enough?,History was strongest for routine forecasting because observed sales already captured active treated patient stock.
+When does patient/market information help?,"It helped most as a scenario and event-intelligence layer, especially when assumptions about persistence, access, competition, epidemiology, or supply changed."
+What should a planner do?,"Use simple demand anchors for stable short-term forecasting, but use patient-informed scenario analysis when future market assumptions change."
+What is the main limitation?,"The case is synthetic and simplified; real-world deployment would require validated epidemiology, access, claims, sales, and treatment-flow data."

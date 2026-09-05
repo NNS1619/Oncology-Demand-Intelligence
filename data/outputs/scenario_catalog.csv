@@ -1,0 +1,8 @@
+scenario_name,description,access_multiplier,patient_pool_multiplier,competitor_pressure_delta,persistence_multiplier,apply_competitor_to,supply_fill_rate_therapy_d_east
+Base case,No change from governed baseline forecast.,1.0,1.0,0.0,1.0,none,1.0
+Access downside,Market access drops by 15 percent across therapies and regions.,0.85,1.0,0.0,1.0,none,1.0
+Earlier strong competitor pressure,"Overlapping competitor pressure rises for biomarker-positive therapies A, B, and D.",1.0,1.0,0.25,1.0,positive_overlap,1.0
+Epidemiology upside,Eligible patient pool increases by 12 percent.,1.0,1.12,0.0,1.0,none,1.0
+Persistence downside,"Average persistence worsens, reducing active treated demand by 8 percent.",1.0,1.0,0.0,0.92,none,1.0
+Therapy D East supply constraint,Therapy D in East has a 70 percent supply fill rate.,1.0,1.0,0.0,1.0,none,0.7
+Combined downside,"Access drops, competitor pressure rises, persistence worsens, and Therapy D East supply is constrained.",0.85,1.0,0.25,0.92,positive_overlap,0.7

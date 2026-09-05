@@ -1,0 +1,8 @@
+claim_type,claim
+Supported,Recent observed demand was the strongest overall forecast benchmark in this synthetic oncology market.
+Supported,Patient and market signals were useful for event-regime analysis and scenario planning.
+Supported,Forecast Information Set governance prevented ordinary forecast models from using unavailable future information.
+Supported,"Scenario outputs were traceable from access, epidemiology, competition, persistence, and supply assumptions to demand."
+Do not claim,Hybrid XGBoost beat all simpler methods across all horizons.
+Do not claim,The synthetic case study proves real-world oncology demand behavior.
+Do not claim,The model is clinically validated or ready for production deployment.

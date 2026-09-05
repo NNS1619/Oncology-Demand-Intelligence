@@ -1,0 +1,11 @@
+review_area,assessment,comment
+Research question,PASS,"The notebook evaluates when historical demand, patient logic, and hybrid information help forecasting."
+Temporal validation,PASS,"Rolling-origin validation is used across 1, 3, 6, and 12-month horizons."
+Leakage control,PASS,Forecast Information Set rules from Notebook 2 are preserved.
+Baselines,PASS,"Naive and seasonal naive baselines are included, and naive is not ignored."
+Patient-informed comparator,PASS,"The final patient-driver model anchors to current demand and adjusts using governed patient, access, and competition signals."
+Hybrid model,PASS WITH LIMITATION,Hybrid XGBoost adds value in selected regimes but not overall versus naive.
+Scenario engine,PASS,Scenario outputs move in clinically and commercially logical directions.
+Uncertainty,PASS,Monte Carlo intervals provide practical P10/P50/P90 planning ranges.
+External validity,LIMITATION,The analysis is a synthetic case study and would need real data validation.
+Client POC value,PASS,"The notebook supports planning conversations around access, competition, persistence, epidemiology, supply, and uncertainty."
