@@ -4,7 +4,8 @@
 # ============================================================
 
 from pathlib import Path
-
+import os
+import sys
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -23,7 +24,22 @@ st.set_page_config(
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
+try:
+    if "OPENAI_API_KEY" in st.secrets:
+        os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
+except Exception:
+    pass
+
+try:
+    from rag.rag_utils import evidence_preview, explain_scenario_with_rag
+    RAG_AVAILABLE = True
+    RAG_IMPORT_ERROR = None
+except Exception as error:
+    RAG_AVAILABLE = False
+    RAG_IMPORT_ERROR = str(error)
 DATA_RAW = PROJECT_ROOT / "data" / "raw_synthetic"
 DATA_PROCESSED = PROJECT_ROOT / "data" / "processed"
 DATA_OUTPUTS = PROJECT_ROOT / "data" / "outputs"
@@ -468,10 +484,9 @@ with tab_evidence:
 
     st.markdown(
         """
-This tab is where the embedding-based RAG layer will connect. The numerical
-engine has already calculated the forecasts and scenarios. RAG will retrieve
-relevant assumption and methodology evidence. The LLM will explain the result,
-but it will not calculate or change official values.
+The numerical engine has already calculated the forecasts and scenarios.
+The RAG layer retrieves relevant assumption and methodology evidence.
+The LLM explains the result, but it does not calculate or change official values.
 """
     )
 
@@ -499,7 +514,7 @@ but it will not calculate or change official values.
 
     st.dataframe(boundary_table, use_container_width=True)
 
-    st.markdown("### Structured Scenario Context for Future RAG")
+    st.markdown("### Explain a Scenario")
 
     selected_for_explanation = st.selectbox(
         "Choose scenario to explain",
@@ -507,22 +522,94 @@ but it will not calculate or change official values.
         key="explain_scenario",
     )
 
-    scenario_context = scenario_summary.loc[
+    scenario_context_row = scenario_summary.loc[
         scenario_summary["scenario_name"] == selected_for_explanation
     ].iloc[0]
 
-    st.code(
-        f"""
-Scenario: {scenario_context['scenario_name']}
-Baseline forecast: {scenario_context['baseline_forecast_units']:.1f} units
-Scenario forecast: {scenario_context['scenario_forecast_units']:.1f} units
-Absolute change: {scenario_context['absolute_change_units']:.1f} units
-Percent change: {scenario_context['percent_change']:.1%}
-P10/P50/P90: {scenario_context['p10']:.1f} / {scenario_context['p50']:.1f} / {scenario_context['p90']:.1f}
-Description: {scenario_context.get('description', '')}
-""",
-        language="text",
+    therapy_context = ""
+
+    if not therapy_scenario_summary.empty:
+        therapy_rows = therapy_scenario_summary.loc[
+            therapy_scenario_summary["scenario_name"] == selected_for_explanation
+        ].copy()
+
+        therapy_context = therapy_rows[
+            [
+                "therapy",
+                "baseline_forecast_units",
+                "scenario_forecast_units",
+                "absolute_change_units",
+                "percent_change",
+            ]
+        ].round(3).to_string(index=False)
+
+    scenario_context = f"""
+Scenario: {scenario_context_row['scenario_name']}
+Description: {scenario_context_row.get('description', '')}
+
+Baseline forecast: {scenario_context_row['baseline_forecast_units']:.1f} units
+Scenario forecast: {scenario_context_row['scenario_forecast_units']:.1f} units
+Absolute change: {scenario_context_row['absolute_change_units']:.1f} units
+Percent change: {scenario_context_row['percent_change']:.1%}
+
+Uncertainty:
+P10: {scenario_context_row['p10']:.1f}
+P50: {scenario_context_row['p50']:.1f}
+P90: {scenario_context_row['p90']:.1f}
+
+Therapy-level impact:
+{therapy_context}
+"""
+
+    st.code(scenario_context, language="text")
+
+    user_question = st.text_input(
+        "Optional question for RAG",
+        value=f"Explain the {selected_for_explanation} scenario using methodology, assumptions, and scenario logic.",
     )
+
+    if not RAG_AVAILABLE:
+        st.warning(
+            "RAG utilities are not available yet. Check rag/rag_utils.py and requirements.txt."
+        )
+
+        if RAG_IMPORT_ERROR:
+            st.code(RAG_IMPORT_ERROR)
+
+    else:
+        col1, col2 = st.columns(2)
+
+        with col1:
+            preview_clicked = st.button("Preview Retrieved Evidence")
+
+        with col2:
+            explain_clicked = st.button("Generate Grounded Explanation")
+
+        if preview_clicked:
+            with st.spinner("Retrieving evidence chunks..."):
+                evidence_text = evidence_preview(
+                    query=user_question,
+                    k=4,
+                )
+
+            st.markdown("### Retrieved Evidence")
+            st.text(evidence_text)
+
+        if explain_clicked:
+            with st.spinner(
+                "Retrieving evidence and generating grounded explanation..."
+            ):
+                result = explain_scenario_with_rag(
+                    scenario_context=scenario_context,
+                    user_question=user_question,
+                    k=4,
+                )
+
+            st.markdown("### Grounded Explanation")
+            st.write(result["answer"])
+
+            with st.expander("Retrieved evidence used"):
+                st.text(result["evidence_text"])
 
     if RAG_DOCS.exists():
         md_files = sorted(RAG_DOCS.glob("*.md"))
@@ -536,7 +623,6 @@ Description: {scenario_context.get('description', '')}
             st.info("No evidence markdown files found yet.")
     else:
         st.info("RAG evidence folder has not been populated yet.")
-
 
 # ------------------------------------------------------------
 # Tab 6: Governance
