@@ -5,52 +5,107 @@
 from pathlib import Path
 
 from dotenv import load_dotenv
+from langchain_community.document_loaders import DirectoryLoader, TextLoader
 from langchain_community.vectorstores import FAISS
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
+EVIDENCE_DOCS_DIR = PROJECT_ROOT / "rag" / "evidence_docs"
 VECTOR_STORE_DIR = PROJECT_ROOT / "rag" / "vector_store"
 
 
-def load_vector_store():
-    """
-    Loads the saved FAISS vector store.
+def load_evidence_documents():
+    if not EVIDENCE_DOCS_DIR.exists():
+        raise FileNotFoundError(
+            f"Evidence docs folder not found: {EVIDENCE_DOCS_DIR}"
+        )
 
-    This assumes rag/build_vector_store.py has already been run.
+    loader = DirectoryLoader(
+        path=str(EVIDENCE_DOCS_DIR),
+        glob="*.md",
+        loader_cls=TextLoader,
+        loader_kwargs={"encoding": "utf-8"},
+        show_progress=False,
+    )
+
+    documents = loader.load()
+
+    if len(documents) == 0:
+        raise ValueError(
+            "No markdown evidence documents found in rag/evidence_docs."
+        )
+
+    return documents
+
+
+def split_documents(documents):
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=800,
+        chunk_overlap=120,
+        separators=["\n\n", "\n", ". ", " ", ""],
+    )
+
+    chunks = splitter.split_documents(documents)
+
+    if len(chunks) == 0:
+        raise ValueError("Document splitting produced zero chunks.")
+
+    return chunks
+
+
+def build_vector_store():
+    """
+    Builds and saves a FAISS vector store from rag/evidence_docs/*.md.
     """
 
     load_dotenv()
 
-    if not VECTOR_STORE_DIR.exists():
-        raise FileNotFoundError(
-            "Vector store not found. Run rag/build_vector_store.py first."
-        )
+    documents = load_evidence_documents()
+    chunks = split_documents(documents)
 
     embeddings = OpenAIEmbeddings(
         model="text-embedding-3-small"
     )
 
-    vector_store = FAISS.load_local(
-        folder_path=str(VECTOR_STORE_DIR),
-        embeddings=embeddings,
-        allow_dangerous_deserialization=True,
+    vector_store = FAISS.from_documents(
+        documents=chunks,
+        embedding=embeddings,
     )
 
+    VECTOR_STORE_DIR.mkdir(parents=True, exist_ok=True)
+
+    vector_store.save_local(str(VECTOR_STORE_DIR))
+
     return vector_store
+
+
+def load_vector_store():
+    """
+    Loads FAISS if it exists. If not, builds it from evidence docs.
+    """
+
+    load_dotenv()
+
+    embeddings = OpenAIEmbeddings(
+        model="text-embedding-3-small"
+    )
+
+    if VECTOR_STORE_DIR.exists():
+        return FAISS.load_local(
+            folder_path=str(VECTOR_STORE_DIR),
+            embeddings=embeddings,
+            allow_dangerous_deserialization=True,
+        )
+
+    return build_vector_store()
 
 
 def retrieve_evidence(query, k=4):
     """
     Retrieves the most relevant evidence chunks.
-
-    Inputs:
-    - query: user or app-generated question
-    - k: number of chunks to retrieve
-
-    Output:
-    - list of retrieved documents
     """
 
     vector_store = load_vector_store()
@@ -59,14 +114,12 @@ def retrieve_evidence(query, k=4):
         search_kwargs={"k": k}
     )
 
-    documents = retriever.invoke(query)
-
-    return documents
+    return retriever.invoke(query)
 
 
 def format_evidence(documents):
     """
-    Converts retrieved documents into a readable evidence block.
+    Converts retrieved documents into readable text.
     """
 
     formatted_chunks = []
@@ -84,11 +137,12 @@ def format_evidence(documents):
 
 def build_scenario_explanation_prompt(scenario_context, evidence_text):
     """
-    Builds a controlled prompt for scenario explanation.
+    Builds a controlled prompt.
 
-    Important:
-    The LLM receives numerical outputs from the model.
-    It should explain those outputs, not recalculate them.
+    Boundary:
+    - numerical engine calculates
+    - RAG retrieves
+    - LLM explains
     """
 
     return f"""
@@ -118,22 +172,14 @@ Write a clear business explanation with:
 def explain_scenario_with_rag(scenario_context, user_question=None, k=4):
     """
     Generates a grounded scenario explanation.
-
-    Boundary:
-    - Numerical engine calculates scenario_context.
-    - RAG retrieves evidence.
-    - LLM explains.
     """
 
     load_dotenv()
 
-    if user_question is None:
-        query = (
-            "Explain the scenario result using assumptions, methodology, "
-            "forecast information set, scenario logic, and model results."
-        )
-    else:
-        query = user_question
+    query = user_question or (
+        "Explain the scenario result using assumptions, methodology, "
+        "forecast information set, scenario logic, and model results."
+    )
 
     documents = retrieve_evidence(query=query, k=k)
     evidence_text = format_evidence(documents)
@@ -160,8 +206,7 @@ def explain_scenario_with_rag(scenario_context, user_question=None, k=4):
 def evidence_preview(query, k=4):
     """
     Retrieves evidence without calling the LLM.
-
-    Useful for debugging retrieval quality.
+    Useful for checking whether retrieval is sensible.
     """
 
     documents = retrieve_evidence(query=query, k=k)
