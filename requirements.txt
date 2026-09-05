@@ -6,8 +6,8 @@ scikit-learn
 xgboost
 langchain
 langchain-community
-langchain-openai
 langchain-text-splitters
 faiss-cpu
-openai
 python-dotenv
+langchain-google-genai
+google-generativeai
