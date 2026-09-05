@@ -1,5 +1,5 @@
 # ============================================================
-# RAG Utilities for Grounded Scenario Explanation
+# RAG Utilities for Grounded Project Q&A
 # Gemini + LangChain + FAISS
 # ============================================================
 
@@ -22,13 +22,59 @@ EVIDENCE_DOCS_DIR = PROJECT_ROOT / "rag" / "evidence_docs"
 VECTOR_STORE_DIR = PROJECT_ROOT / "rag" / "vector_store"
 
 
+# ------------------------------------------------------------
+# Environment / secret handling
+# ------------------------------------------------------------
+
+def configure_google_api_key():
+    """
+    Works in both local development and Streamlit Cloud.
+
+    Local:
+        .env file with GOOGLE_API_KEY=...
+
+    Streamlit Cloud:
+        App secrets with GOOGLE_API_KEY="..."
+    """
+
+    load_dotenv()
+
+    if os.getenv("GOOGLE_API_KEY"):
+        return
+
+    try:
+        import streamlit as st
+
+        if "GOOGLE_API_KEY" in st.secrets:
+            os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
+
+        elif "GEMINI_API_KEY" in st.secrets:
+            os.environ["GOOGLE_API_KEY"] = st.secrets["GEMINI_API_KEY"]
+
+    except Exception:
+        pass
+
+    if not os.getenv("GOOGLE_API_KEY"):
+        raise RuntimeError(
+            "GOOGLE_API_KEY is missing. Add it to Streamlit secrets or a local .env file."
+        )
+
+
+# ------------------------------------------------------------
+# Gemini models
+# ------------------------------------------------------------
+
 def get_embeddings_model():
+    configure_google_api_key()
+
     return GoogleGenerativeAIEmbeddings(
         model="models/gemini-embedding-001"
     )
 
 
 def get_chat_model(model_name):
+    configure_google_api_key()
+
     return ChatGoogleGenerativeAI(
         model=model_name,
         temperature=0,
@@ -36,6 +82,10 @@ def get_chat_model(model_name):
 
 
 def candidate_chat_models():
+    """
+    Keep configured model first, then use stable low-cost fallbacks.
+    """
+
     configured_model = os.getenv("GEMINI_CHAT_MODEL")
 
     models = []
@@ -45,9 +95,9 @@ def candidate_chat_models():
 
     models.extend(
         [
-            "gemini-3.5-flash",
-            "gemini-3.0-flash",
             "gemini-flash-latest",
+            "gemini-3.5-flash",
+            "gemini-3.1-flash-lite",
         ]
     )
 
@@ -58,14 +108,14 @@ def normalize_llm_text(content):
     """
     Converts Gemini/LangChain response content into clean display text.
 
-    Some Gemini responses come back as:
-    [{"type": "text", "text": "...", "extras": {...}}]
+    Some Gemini responses can return content as:
+        [{"type": "text", "text": "...", "extras": {...}}]
 
-    The app should show only the text, not metadata/signatures.
+    The app should display only the text.
     """
 
     if isinstance(content, str):
-        return content
+        return content.strip()
 
     if isinstance(content, list):
         text_parts = []
@@ -83,8 +133,35 @@ def normalize_llm_text(content):
 
         return "\n\n".join(text_parts).strip()
 
-    return str(content)
+    return str(content).strip()
 
+
+def invoke_gemini_with_fallback(prompt):
+    errors = []
+
+    for model_name in candidate_chat_models():
+        try:
+            llm = get_chat_model(model_name)
+            response = llm.invoke(prompt)
+
+            return {
+                "content": normalize_llm_text(response.content),
+                "model_used": model_name,
+            }
+
+        except Exception as error:
+            errors.append(f"{model_name}: {type(error).__name__}")
+
+    raise RuntimeError(
+        "No Gemini chat model worked. Tried: "
+        + "; ".join(errors)
+        + ". Check GOOGLE_API_KEY, model access, and Streamlit secrets."
+    )
+
+
+# ------------------------------------------------------------
+# Evidence loading and vector store
+# ------------------------------------------------------------
 
 def load_evidence_documents():
     if not EVIDENCE_DOCS_DIR.exists():
@@ -126,8 +203,6 @@ def split_documents(documents):
 
 
 def build_vector_store():
-    load_dotenv()
-
     documents = load_evidence_documents()
     chunks = split_documents(documents)
 
@@ -139,15 +214,12 @@ def build_vector_store():
     )
 
     VECTOR_STORE_DIR.mkdir(parents=True, exist_ok=True)
-
     vector_store.save_local(str(VECTOR_STORE_DIR))
 
     return vector_store
 
 
 def load_vector_store():
-    load_dotenv()
-
     embeddings = get_embeddings_model()
 
     if VECTOR_STORE_DIR.exists():
@@ -170,6 +242,17 @@ def retrieve_evidence(query, k=4):
     return retriever.invoke(query)
 
 
+def source_names(documents):
+    sources = []
+
+    for doc in documents:
+        source = doc.metadata.get("source", "unknown source")
+        source_name = Path(source).name
+        sources.append(source_name)
+
+    return sorted(set(sources))
+
+
 def format_evidence(documents):
     formatted_chunks = []
 
@@ -184,6 +267,172 @@ def format_evidence(documents):
     return "\n\n".join(formatted_chunks)
 
 
+# ------------------------------------------------------------
+# Scope guardrail
+# ------------------------------------------------------------
+
+def is_project_scope_question(question):
+    """
+    The app is a project assistant, not a general chatbot.
+    """
+
+    question_lower = question.lower()
+
+    allowed_terms = [
+        "project",
+        "forecast",
+        "forecasting",
+        "demand",
+        "sales",
+        "oncology",
+        "cancer",
+        "therapy",
+        "patient",
+        "patient-flow",
+        "patient flow",
+        "access",
+        "competition",
+        "competitor",
+        "epidemiology",
+        "persistence",
+        "supply",
+        "scenario",
+        "uncertainty",
+        "p10",
+        "p50",
+        "p90",
+        "planning case",
+        "monte carlo",
+        "wape",
+        "mae",
+        "bias",
+        "fva",
+        "xgboost",
+        "naive",
+        "hybrid",
+        "assumption",
+        "evidence",
+        "rag",
+        "llm",
+        "gemini",
+        "limitation",
+        "validation",
+        "leakage",
+        "forecast information set",
+        "sql",
+        "python",
+        "methodology",
+        "model",
+        "notebook",
+        "client",
+        "pharma",
+        "pharmaceutical",
+    ]
+
+    return any(term in question_lower for term in allowed_terms)
+
+
+# ------------------------------------------------------------
+# Flexible project Q&A
+# ------------------------------------------------------------
+
+def build_qa_prompt(user_question, evidence_text, structured_context=None):
+    context_block = ""
+
+    if structured_context:
+        context_block = f"""
+STRUCTURED NUMERICAL CONTEXT:
+{structured_context}
+"""
+
+    return f"""
+You are a senior pharmaceutical analytics and data science reviewer.
+
+You are answering questions about a synthetic oncology demand forecasting and scenario-intelligence POC.
+
+Answer the user's actual question directly.
+Do not use a fixed template.
+Do not provide a full project walkthrough unless the user asks for one.
+
+Use retrieved evidence and structured numerical context only when relevant.
+
+Rules:
+- Stay within this project.
+- Do not answer unrelated questions such as today's date, weather, news, or personal advice.
+- Do not invent numerical values.
+- Do not recalculate official forecasts or scenarios.
+- Do not claim clinical validation.
+- Say this is a synthetic case study when relevant.
+- Use "aggregated patient-flow signals" rather than "patient-level data."
+- Explain technical terms in business language.
+- For P10, P50, and P90, explain them as conservative, expected, and upside planning cases.
+- If the evidence is not enough, say what is missing.
+- Be concise for narrow questions.
+- Be more detailed only when the user asks for method, results, or project explanation.
+- Do not expose metadata, signatures, JSON objects, tool traces, or raw model internals.
+
+USER QUESTION:
+{user_question}
+
+{context_block}
+
+RETRIEVED EVIDENCE:
+{evidence_text}
+
+Answer:
+"""
+
+
+def answer_question_with_rag(user_question, structured_context=None, k=5):
+    """
+    General project Q&A.
+
+    Boundary:
+    - numerical engine calculates structured outputs
+    - RAG retrieves project evidence
+    - Gemini explains the answer
+    """
+
+    configure_google_api_key()
+
+    if not is_project_scope_question(user_question):
+        return {
+            "answer": (
+                "This question is outside the project evidence base. "
+                "This assistant is designed to answer questions about the oncology demand "
+                "forecasting POC, including methodology, assumptions, scenario outputs, "
+                "uncertainty, validation, leakage controls, limitations, and the RAG boundary."
+            ),
+            "model_used": "scope_guardrail",
+            "retrieved_evidence": [],
+            "evidence_text": "",
+            "sources": [],
+        }
+
+    documents = retrieve_evidence(query=user_question, k=k)
+    evidence_text = format_evidence(documents)
+
+    prompt = build_qa_prompt(
+        user_question=user_question,
+        evidence_text=evidence_text,
+        structured_context=structured_context,
+    )
+
+    response = invoke_gemini_with_fallback(prompt)
+
+    return {
+        "answer": response["content"],
+        "model_used": response["model_used"],
+        "retrieved_evidence": documents,
+        "evidence_text": evidence_text,
+        "sources": source_names(documents),
+    }
+
+
+# ------------------------------------------------------------
+# Optional scenario-specific explanation
+# ------------------------------------------------------------
+
 def build_scenario_explanation_prompt(scenario_context, evidence_text):
     return f"""
 You are explaining a synthetic pharmaceutical oncology demand forecasting and scenario-intelligence POC.
@@ -196,7 +445,9 @@ Rules:
 - Do not claim clinical validation.
 - Explain that this is a synthetic case study.
 - Explain access as reachable market/treatment availability, not clinical eligibility.
-- Keep the tone simple, professional, and client-ready.
+- Use "aggregated patient-flow signals" rather than "patient-level data."
+- Use simple, professional, client-ready language.
+- Explain P10 as conservative planning case, P50 as expected planning case, and P90 as upside planning case.
 - If evidence is insufficient, say what is missing.
 
 STRUCTURED SCENARIO OUTPUT:
@@ -205,56 +456,29 @@ STRUCTURED SCENARIO OUTPUT:
 RETRIEVED EVIDENCE:
 {evidence_text}
 
-Write one clear explanation that covers:
-
-1. What this project is trying to do
-2. How the forecasting comparison works in simple terms
-3. Why recent demand can be a very strong benchmark
-4. What the selected scenario changes versus baseline
-5. What the scenario result means numerically and commercially
-6. Which therapies are most affected, if available
-7. What retrieved evidence or documented assumptions support the explanation
-8. What a pharma client or senior data scientist should validate before real-world use
-9. One short final takeaway
+Write a focused scenario explanation covering:
+1. What changed versus baseline
+2. What the result means commercially
+3. Which therapy or portfolio area is most affected, if available
+4. How uncertainty should be interpreted
+5. What a pharma client should validate before real-world use
+6. One short final takeaway
 """
-
-
-def invoke_gemini_with_fallback(prompt):
-    errors = []
-
-    for model_name in candidate_chat_models():
-        try:
-            llm = get_chat_model(model_name)
-            response = llm.invoke(prompt)
-
-            return {
-                "content": normalize_llm_text(response.content),
-                "model_used": model_name,
-            }
-
-        except Exception as error:
-            errors.append(f"{model_name}: {type(error).__name__}")
-
-    raise RuntimeError(
-        "No Gemini chat model worked. Tried: "
-        + "; ".join(errors)
-        + ". Check your Gemini API key, model access, and Streamlit secrets."
-    )
 
 
 def explain_scenario_with_rag(scenario_context, user_question=None, k=4):
     """
-    Boundary:
-    - numerical engine calculates scenario_context
-    - RAG retrieves evidence
-    - Gemini explains the already-calculated result
+    Scenario-specific explanation.
+
+    Use this only when the app button is explicitly about the selected scenario.
+    For normal Q&A, use answer_question_with_rag().
     """
 
-    load_dotenv()
+    configure_google_api_key()
 
     query = user_question or (
-        "Explain the scenario result using assumptions, methodology, "
-        "forecast information set, scenario logic, and model results."
+        "Explain the selected scenario using scenario logic, uncertainty, "
+        "assumptions, limitations, and pharmaceutical planning interpretation."
     )
 
     documents = retrieve_evidence(query=query, k=k)
@@ -272,10 +496,18 @@ def explain_scenario_with_rag(scenario_context, user_question=None, k=4):
         "model_used": response["model_used"],
         "retrieved_evidence": documents,
         "evidence_text": evidence_text,
+        "sources": source_names(documents),
     }
 
 
 def evidence_preview(query, k=4):
+    if not is_project_scope_question(query):
+        return (
+            "This question is outside the project evidence base. "
+            "Try asking about forecasting, scenarios, assumptions, uncertainty, "
+            "model results, leakage, or RAG governance."
+        )
+
     documents = retrieve_evidence(query=query, k=k)
 
     return format_evidence(documents)
