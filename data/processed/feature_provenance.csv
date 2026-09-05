@@ -1,0 +1,9 @@
+feature_name,feature_family,information_category,allowed_models,leakage_risk
+sales_at_forecast_origin,historical_demand,observed_historical_information,"historical_model, hybrid_model",low if forecast origin is respected
+sales_lag_1 / sales_lag_3 / sales_lag_6 / sales_lag_12,historical_demand,observed_historical_information,"historical_model, hybrid_model",low if lags are calculated before target month
+rolling_mean_3 / rolling_mean_6 / rolling_sd_6,historical_demand,observed_historical_information,"historical_model, hybrid_model",medium if current or target month is accidentally included
+target_access_rate_allowed,market_access,published_forward_information,"patient_informed_model, hybrid_model",high unless access_known_from_month <= forecast origin
+target_new_metastatic_diagnoses_allowed,epidemiology,published_forward_information / planning assumption,"patient_informed_model, hybrid_model",high if actual future epidemiology is used before known
+target_eligible_new_1l_patient_pool_allowed,patient_pool,published_forward_information / planning assumption,"patient_informed_model, hybrid_model",high if future patient pool truth is used before known
+target_competitor_overlap_pressure_allowed,competition,published_forward_information,"patient_informed_model, hybrid_model",high unless competitor timing and access were known
+target_market_regime,evaluation_label,evaluation_only,none,must not be used as a model feature
