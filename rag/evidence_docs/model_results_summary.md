@@ -5,8 +5,7 @@ The forecasting experiment compared historical, patient-informed, and hybrid app
 ## Main Finding
 
 Recent observed demand was the strongest overall benchmark. The naive model performed best across all horizons.
-
-This is not a project failure. In this synthetic oncology market, demand is persistent because active treated patients continue over time. Recent sales therefore act as a strong proxy for current treated-patient stock.
+ In this synthetic oncology market, demand is persistent because active treated patients continue over time. Recent sales therefore act as a strong proxy for current treated-patient stock.
 
 ## Forecast Value Add
 
