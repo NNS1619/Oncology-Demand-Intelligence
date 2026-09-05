@@ -1,92 +1,198 @@
 # ============================================================
-# Patient-Informed Oncology Demand Forecasting
-# Streamlit Decision-Support App
+# Patient-Informed Oncology Demand Forecasting App
+# Streamlit + Scenario Intelligence + Project RAG
 # ============================================================
 
-from pathlib import Path
-import os
+import re
 import sys
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 import streamlit as st
 
 
 # ------------------------------------------------------------
-# App configuration
+# Paths
+# ------------------------------------------------------------
+
+APP_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = APP_DIR.parent
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+DATA_SEARCH_DIRS = [
+    PROJECT_ROOT / "data" / "outputs",
+    PROJECT_ROOT / "data" / "processed",
+    PROJECT_ROOT / "data",
+    PROJECT_ROOT,
+]
+
+try:
+    from rag.rag_utils import answer_question_with_rag, evidence_preview
+    RAG_AVAILABLE = True
+except Exception as import_error:
+    RAG_AVAILABLE = False
+    RAG_IMPORT_ERROR = import_error
+
+
+# ------------------------------------------------------------
+# Page setup
 # ------------------------------------------------------------
 
 st.set_page_config(
     page_title="Oncology Demand Intelligence",
-    page_icon="📊",
+    page_icon="💊",
     layout="wide",
 )
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-try:
-    if "GOOGLE_API_KEY" in st.secrets:
-        os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
-except Exception:
-    pass
-
-try:
-    from rag.rag_utils import evidence_preview, explain_scenario_with_rag
-    RAG_AVAILABLE = True
-    RAG_IMPORT_ERROR = None
-except Exception as error:
-    RAG_AVAILABLE = False
-    RAG_IMPORT_ERROR = str(error)
-DATA_RAW = PROJECT_ROOT / "data" / "raw_synthetic"
-DATA_PROCESSED = PROJECT_ROOT / "data" / "processed"
-DATA_OUTPUTS = PROJECT_ROOT / "data" / "outputs"
-RAG_DOCS = PROJECT_ROOT / "rag" / "evidence_docs"
+st.title("Patient-Informed Oncology Demand Forecasting")
+st.caption(
+    "A synthetic pharmaceutical analytics POC for forecasting comparison, "
+    "scenario planning, uncertainty, and evidence-grounded explanation."
+)
 
 
 # ------------------------------------------------------------
-# Helper functions
+# File loading helpers
 # ------------------------------------------------------------
+
+def find_file(filename):
+    for folder in DATA_SEARCH_DIRS:
+        candidate = folder / filename
+        if candidate.exists():
+            return candidate
+
+    return None
+
+
+def read_csv_required(filename):
+    path = find_file(filename)
+
+    if path is None:
+        raise FileNotFoundError(
+            f"Required file not found: {filename}. "
+            "Place it in data/outputs, data/processed, or data."
+        )
+
+    return pd.read_csv(path)
+
+
+def read_csv_optional(filename):
+    path = find_file(filename)
+
+    if path is None:
+        return None
+
+    return pd.read_csv(path)
+
 
 @st.cache_data
-def load_csv(path):
-    if path.exists():
-        return pd.read_csv(path)
-    return pd.DataFrame()
+def load_project_outputs():
+    data = {}
 
-
-def pct(x):
-    if pd.isna(x):
-        return "NA"
-    return f"{x:.1%}"
-
-
-def num(x):
-    if pd.isna(x):
-        return "NA"
-    return f"{x:,.1f}"
-
-
-def clean_model_name(name):
-    return (
-        str(name)
-        .replace("_", " ")
-        .replace("xgboost", "XGBoost")
-        .title()
-        .replace("Fva", "FVA")
+    data["compact_metrics"] = read_csv_required(
+        "compact_model_comparison.csv"
     )
 
+    data["metrics_by_horizon"] = read_csv_required(
+        "metrics_by_horizon.csv"
+    )
 
-def require_data(df, name):
-    if df.empty:
-        st.error(f"Missing required file: {name}")
-        st.stop()
+    data["metrics_by_horizon_regime"] = read_csv_required(
+        "metrics_by_horizon_regime.csv"
+    )
+
+    data["forecast_results"] = read_csv_optional(
+        "forecast_results.csv"
+    )
+
+    data["scenario_summary_with_uncertainty"] = read_csv_required(
+        "scenario_summary_with_uncertainty.csv"
+    )
+
+    data["therapy_scenario_summary"] = read_csv_required(
+        "therapy_scenario_summary.csv"
+    )
+
+    data["scenario_row_outputs"] = read_csv_optional(
+        "scenario_row_outputs.csv"
+    )
+
+    data["scenario_catalog"] = read_csv_optional(
+        "scenario_catalog.csv"
+    )
+
+    data["regime_positive_fva"] = read_csv_optional(
+        "regime_positive_fva.csv"
+    )
+
+    data["claim_discipline"] = read_csv_optional(
+        "claim_discipline.csv"
+    )
+
+    data["senior_review_gate"] = read_csv_optional(
+        "notebook_3_senior_review_gate.csv"
+    )
+
+    data["notebook_3_conclusion"] = read_csv_optional(
+        "notebook_3_conclusion.csv"
+    )
+
+    return data
 
 
-def safe_columns(df, columns):
-    return [col for col in columns if col in df.columns]
+try:
+    outputs = load_project_outputs()
+except Exception as error:
+    st.error("The app could not load the required project output files.")
+    st.exception(error)
+    st.stop()
+
+
+compact_metrics = outputs["compact_metrics"]
+metrics_by_horizon = outputs["metrics_by_horizon"]
+metrics_by_horizon_regime = outputs["metrics_by_horizon_regime"]
+forecast_results = outputs["forecast_results"]
+scenario_summary_with_uncertainty = outputs["scenario_summary_with_uncertainty"]
+therapy_scenario_summary = outputs["therapy_scenario_summary"]
+scenario_row_outputs = outputs["scenario_row_outputs"]
+scenario_catalog = outputs["scenario_catalog"]
+regime_positive_fva = outputs["regime_positive_fva"]
+claim_discipline = outputs["claim_discipline"]
+senior_review_gate = outputs["senior_review_gate"]
+notebook_3_conclusion = outputs["notebook_3_conclusion"]
+
+
+# ------------------------------------------------------------
+# Display helpers
+# ------------------------------------------------------------
+
+def fmt_units(value):
+    if pd.isna(value):
+        return "Not available"
+
+    return f"{value:,.1f}"
+
+
+def fmt_pct(value):
+    if pd.isna(value):
+        return "Not available"
+
+    return f"{value:.1%}"
+
+
+def format_percent_column(df, columns):
+    out = df.copy()
+
+    for col in columns:
+        if col in out.columns:
+            out[col] = out[col].map(lambda x: f"{x:.1%}" if pd.notna(x) else "")
+
+    return out
+
 
 SCENARIO_CLIENT_LABELS = {
     "Base case": "Base planning forecast",
@@ -98,280 +204,601 @@ SCENARIO_CLIENT_LABELS = {
     "Combined downside": "Combined downside planning case",
 }
 
+
 SCENARIO_CLIENT_EXPLANATIONS = {
-    "Base case": "Current governed planning forecast with no scenario adjustment.",
-    "Access downside": "A simple stress test where market access falls equally across therapies and regions.",
-    "Earlier strong competitor pressure": "Tests stronger competitive pressure against therapies serving overlapping biomarker-positive patients.",
-    "Epidemiology upside": "Tests higher eligible patient volume.",
-    "Persistence downside": "Tests lower treatment continuation and fewer active patient-months.",
-    "Therapy D East supply constraint": "Tests limited observed sales for Therapy D in East only.",
-    "Combined downside": "Tests multiple planning risks happening together.",
+    "Base case": (
+        "Current governed planning forecast with no scenario adjustment."
+    ),
+    "Access downside": (
+        "A simple stress test where reachable market access falls broadly."
+    ),
+    "Earlier strong competitor pressure": (
+        "Stronger pressure against therapies with overlapping eligible patients."
+    ),
+    "Epidemiology upside": (
+        "Higher eligible patient volume increases demand opportunity."
+    ),
+    "Persistence downside": (
+        "Lower treatment continuation reduces patient-months and demand."
+    ),
+    "Therapy D East supply constraint": (
+        "Observed sales are constrained for Therapy D in the East region."
+    ),
+    "Combined downside": (
+        "Multiple risks are applied together to estimate downside exposure."
+    ),
 }
 
 
 def add_client_scenario_labels(df):
     out = df.copy()
 
-    out["client_scenario_name"] = out["scenario_name"].map(
-        SCENARIO_CLIENT_LABELS
-    ).fillna(out["scenario_name"])
+    if "scenario_name" in out.columns:
+        out["scenario_label"] = out["scenario_name"].map(
+            SCENARIO_CLIENT_LABELS
+        ).fillna(out["scenario_name"])
 
-    out["client_explanation"] = out["scenario_name"].map(
-        SCENARIO_CLIENT_EXPLANATIONS
-    ).fillna(out.get("description", ""))
+        out["client_interpretation"] = out["scenario_name"].map(
+            SCENARIO_CLIENT_EXPLANATIONS
+        ).fillna("Scenario assumption from the saved output table.")
 
     return out
-# ------------------------------------------------------------
-# Load data
-# ------------------------------------------------------------
-
-assumption_registry = load_csv(DATA_RAW / "assumption_registry.csv")
-feature_provenance = load_csv(DATA_PROCESSED / "feature_provenance.csv")
-feature_availability_audit = load_csv(DATA_PROCESSED / "feature_availability_audit.csv")
-
-forecast_results = load_csv(DATA_OUTPUTS / "forecast_results.csv")
-compact_metrics = load_csv(DATA_OUTPUTS / "compact_model_comparison.csv")
-metrics_by_horizon = load_csv(DATA_OUTPUTS / "metrics_by_horizon.csv")
-metrics_by_horizon_regime = load_csv(DATA_OUTPUTS / "metrics_by_horizon_regime.csv")
-regime_positive_fva = load_csv(DATA_OUTPUTS / "regime_positive_fva.csv")
-
-scenario_catalog = load_csv(DATA_OUTPUTS / "scenario_catalog.csv")
-scenario_summary = load_csv(DATA_OUTPUTS / "scenario_summary_with_uncertainty.csv")
-therapy_scenario_summary = load_csv(DATA_OUTPUTS / "therapy_scenario_summary.csv")
-
-claim_discipline = load_csv(DATA_OUTPUTS / "claim_discipline.csv")
-senior_review_gate = load_csv(DATA_OUTPUTS / "notebook_3_senior_review_gate.csv")
-notebook_3_conclusion = load_csv(DATA_OUTPUTS / "notebook_3_conclusion.csv")
-
-require_data(forecast_results, "data/outputs/forecast_results.csv")
-require_data(compact_metrics, "data/outputs/compact_model_comparison.csv")
-require_data(scenario_summary, "data/outputs/scenario_summary_with_uncertainty.csv")
 
 
-# ------------------------------------------------------------
-# Sidebar
-# ------------------------------------------------------------
-
-st.sidebar.title("Controls ⚙️")
-
-available_horizons = sorted(forecast_results["horizon_months"].dropna().unique())
-available_therapies = sorted(forecast_results["therapy"].dropna().unique())
-available_regions = sorted(forecast_results["region"].dropna().unique())
-
-selected_horizon = st.sidebar.selectbox(
-    "Forecast horizon",
-    available_horizons,
-    index=min(2, len(available_horizons) - 1),
+scenario_summary_display = add_client_scenario_labels(
+    scenario_summary_with_uncertainty
 )
 
-selected_therapy = st.sidebar.selectbox(
-    "Therapy",
-    available_therapies,
-)
-
-selected_region = st.sidebar.selectbox(
-    "Region",
-    available_regions,
-)
-
-st.sidebar.markdown("---")
-st.sidebar.caption(
-    "This app reads saved notebook outputs. It does not retrain models."
+therapy_scenario_display = add_client_scenario_labels(
+    therapy_scenario_summary
 )
 
 
 # ------------------------------------------------------------
-# Header
+# Structured Analytics Router for RAG
 # ------------------------------------------------------------
 
-st.title("Patient-Informed Oncology Demand Forecasting")
-st.caption(
-    "Synthetic pharmaceutical demand forecasting and scenario-intelligence POC"
-)
+THERAPY_NAMES = {
+    "therapy a": "Therapy A",
+    "therapy b": "Therapy B",
+    "therapy c": "Therapy C",
+    "therapy d": "Therapy D",
+}
 
-st.markdown(
-    """
-This POC evaluates when recent historical demand is enough, and when patient-flow,
-market access, epidemiology, persistence, supply, and competition signals add value
-for pharmaceutical planning.
+SCENARIO_NAMES = {
+    "base": "Base case",
+    "base case": "Base case",
+    "access": "Access downside",
+    "access downside": "Access downside",
+    "competitor": "Earlier strong competitor pressure",
+    "competition": "Earlier strong competitor pressure",
+    "earlier strong competitor pressure": "Earlier strong competitor pressure",
+    "epidemiology": "Epidemiology upside",
+    "epidemiology upside": "Epidemiology upside",
+    "persistence": "Persistence downside",
+    "persistence downside": "Persistence downside",
+    "supply": "Therapy D East supply constraint",
+    "supply constraint": "Therapy D East supply constraint",
+    "therapy d east supply constraint": "Therapy D East supply constraint",
+    "combined": "Combined downside",
+    "combined downside": "Combined downside",
+}
+
+
+def detect_therapy(question):
+    question_lower = question.lower()
+
+    for key, therapy in THERAPY_NAMES.items():
+        if key in question_lower:
+            return therapy
+
+    return None
+
+
+def detect_scenario(question):
+    question_lower = question.lower()
+
+    for key in sorted(SCENARIO_NAMES.keys(), key=len, reverse=True):
+        if key in question_lower:
+            return SCENARIO_NAMES[key]
+
+    return None
+
+
+def detect_horizon(question):
+    question_lower = question.lower()
+
+    patterns = [
+        r"(\d+)\s*month",
+        r"(\d+)\s*months",
+        r"horizon\s*(\d+)",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, question_lower)
+
+        if match:
+            return int(match.group(1))
+
+    return None
+
+
+def question_mentions_structured_result(question):
+    question_lower = question.lower()
+
+    structured_terms = [
+        "worst",
+        "best",
+        "biggest",
+        "largest",
+        "smallest",
+        "highest",
+        "lowest",
+        "most affected",
+        "least affected",
+        "decline",
+        "drop",
+        "increase",
+        "improve",
+        "improvement",
+        "added value",
+        "add value",
+        "fva",
+        "wape",
+        "mae",
+        "bias",
+        "which therapy",
+        "which scenario",
+        "which model",
+        "when will",
+        "when does",
+        "p10",
+        "p50",
+        "p90",
+        "uncertainty",
+    ]
+
+    return any(term in question_lower for term in structured_terms)
+
+
+def build_therapy_scenario_context(question, therapy_scenario_summary):
+    question_lower = question.lower()
+    therapy = detect_therapy(question)
+    scenario = detect_scenario(question)
+
+    df = therapy_scenario_summary.copy()
+
+    if therapy:
+        df = df[df["therapy"] == therapy]
+
+    if scenario:
+        df = df[df["scenario_name"] == scenario]
+
+    if df.empty:
+        return None
+
+    if any(
+        term in question_lower
+        for term in [
+            "worst",
+            "biggest decline",
+            "largest decline",
+            "drop",
+            "most affected",
+        ]
+    ):
+        selected = df.sort_values(
+            "absolute_change_units",
+            ascending=True,
+        ).iloc[0]
+
+        result_type = "largest negative change"
+
+    elif any(
+        term in question_lower
+        for term in [
+            "best",
+            "biggest increase",
+            "largest increase",
+            "benefit",
+            "upside",
+        ]
+    ):
+        selected = df.sort_values(
+            "absolute_change_units",
+            ascending=False,
+        ).iloc[0]
+
+        result_type = "largest positive change"
+
+    else:
+        df["_abs_change"] = df["absolute_change_units"].abs()
+
+        selected = df.sort_values(
+            "_abs_change",
+            ascending=False,
+        ).iloc[0]
+
+        result_type = "largest absolute change"
+
+    context = f"""
+STRUCTURED DATA RESULT:
+Question type: Therapy-level scenario lookup
+Result type: {result_type}
+
+Therapy: {selected["therapy"]}
+Scenario: {selected["scenario_name"]}
+Client scenario label: {SCENARIO_CLIENT_LABELS.get(selected["scenario_name"], selected["scenario_name"])}
+
+Baseline forecast units: {fmt_units(selected["baseline_forecast_units"])}
+Scenario forecast units: {fmt_units(selected["scenario_forecast_units"])}
+Absolute change units: {fmt_units(selected["absolute_change_units"])}
+Percent change: {fmt_pct(selected["percent_change"])}
+
+Interpretation instruction:
+Explain that these values come from the saved therapy-level scenario output table.
+Do not recalculate them.
+Explain the commercial meaning in simple pharmaceutical planning language.
+If the scenario is a uniform access downside, explain that similar percentage changes are expected by design and absolute unit impact is the more useful comparison.
 """
-)
+
+    return context
+
+
+def build_overall_scenario_context(question, scenario_summary_with_uncertainty):
+    question_lower = question.lower()
+    scenario = detect_scenario(question)
+
+    df = scenario_summary_with_uncertainty.copy()
+
+    if scenario:
+        df = df[df["scenario_name"] == scenario]
+
+    if df.empty:
+        return None
+
+    if any(
+        term in question_lower
+        for term in [
+            "worst",
+            "biggest decline",
+            "largest decline",
+            "downside",
+            "drop",
+        ]
+    ):
+        selected = df.sort_values(
+            "absolute_change_units",
+            ascending=True,
+        ).iloc[0]
+
+        result_type = "largest overall downside"
+
+    elif any(
+        term in question_lower
+        for term in [
+            "best",
+            "biggest increase",
+            "largest increase",
+            "upside",
+        ]
+    ):
+        selected = df.sort_values(
+            "absolute_change_units",
+            ascending=False,
+        ).iloc[0]
+
+        result_type = "largest overall upside"
+
+    else:
+        selected = df.iloc[0]
+        result_type = "selected scenario"
+
+    context = f"""
+STRUCTURED DATA RESULT:
+Question type: Overall scenario lookup
+Result type: {result_type}
+
+Scenario: {selected["scenario_name"]}
+Client scenario label: {SCENARIO_CLIENT_LABELS.get(selected["scenario_name"], selected["scenario_name"])}
+Description: {selected.get("description", "not available")}
+
+Baseline forecast units: {fmt_units(selected["baseline_forecast_units"])}
+Scenario forecast units: {fmt_units(selected["scenario_forecast_units"])}
+Absolute change units: {fmt_units(selected["absolute_change_units"])}
+Percent change: {fmt_pct(selected["percent_change"])}
+
+Conservative planning case, P10: {fmt_units(selected.get("p10"))}
+Expected planning case, P50: {fmt_units(selected.get("p50"))}
+Upside planning case, P90: {fmt_units(selected.get("p90"))}
+
+Interpretation instruction:
+Explain P10/P50/P90 in client-friendly language.
+Clarify that these are simulated planning ranges from the scenario uncertainty engine, not clinical confidence intervals.
+Do not recalculate the values.
+"""
+
+    return context
+
+
+def build_model_performance_context(question, compact_metrics):
+    question_lower = question.lower()
+    horizon = detect_horizon(question)
+
+    df = compact_metrics.copy()
+
+    if horizon:
+        df = df[df["horizon_months"] == horizon]
+
+    if df.empty:
+        return None
+
+    if any(
+        term in question_lower
+        for term in ["worst", "highest wape", "least accurate"]
+    ):
+        selected = df.sort_values("WAPE", ascending=False).iloc[0]
+        result_type = "worst model by WAPE"
+
+    else:
+        selected = df.sort_values("WAPE", ascending=True).iloc[0]
+        result_type = "best model by WAPE"
+
+    context = f"""
+STRUCTURED DATA RESULT:
+Question type: Model-performance lookup
+Result type: {result_type}
+
+Forecast horizon: {int(selected["horizon_months"])} months
+Model: {selected["model"]}
+
+WAPE: {fmt_pct(selected["WAPE"])}
+MAE: {fmt_units(selected["MAE"])}
+Bias: {fmt_pct(selected["Bias"])}
+
+Interpretation instruction:
+Explain that lower WAPE is better.
+Explain why recent observed demand can be difficult to beat in a persistent oncology demand setting.
+Do not claim that complex ML wins overall unless the structured result supports it.
+"""
+
+    return context
+
+
+def build_regime_value_context(question, regime_positive_fva):
+    question_lower = question.lower()
+
+    if regime_positive_fva is None or regime_positive_fva.empty:
+        return None
+
+    model_terms = {
+        "historical": "historical_xgboost",
+        "patient driver": "patient_driver",
+        "patient": "patient_driver",
+        "hybrid": "hybrid_xgboost",
+    }
+
+    selected_model = None
+
+    for term, model in model_terms.items():
+        if term in question_lower:
+            selected_model = model
+            break
+
+    if selected_model is None:
+        return None
+
+    df = regime_positive_fva.copy()
+
+    fva_col = f"{selected_model}_fva_vs_naive"
+    wape_col = f"{selected_model}_wape"
+
+    if fva_col not in df.columns:
+        return None
+
+    df = df[df[fva_col] > 0].copy()
+
+    if df.empty:
+        return f"""
+STRUCTURED DATA RESULT:
+Question type: Regime Forecast Value Add lookup
+
+Model checked: {selected_model}
+Result: No positive Forecast Value Add windows were found for this model in the saved regime-positive table.
+
+Interpretation instruction:
+Explain that the selected model did not beat naive in the stored positive-FVA regime windows.
+"""
+
+    df = df.sort_values(fva_col, ascending=False)
+
+    rows = []
+
+    for _, row in df.head(5).iterrows():
+        rows.append(
+            f"- Horizon {int(row['horizon_months'])} months, "
+            f"regime {row['target_market_regime']}: "
+            f"{selected_model} WAPE {fmt_pct(row[wape_col])}, "
+            f"naive WAPE {fmt_pct(row['naive_wape'])}, "
+            f"FVA vs naive {fmt_pct(row[fva_col])}, "
+            f"n forecasts {int(row['n_forecasts'])}"
+        )
+
+    context = f"""
+STRUCTURED DATA RESULT:
+Question type: Regime Forecast Value Add lookup
+
+Model checked: {selected_model}
+Positive value-add windows:
+{chr(10).join(rows)}
+
+Interpretation instruction:
+Explain that patient/market or hybrid methods did not win overall, but did add value in selected event regimes.
+Mention sample-size caution if n_forecasts is small.
+"""
+
+    return context
+
+
+def build_structured_context_for_question(
+    question,
+    scenario_summary_with_uncertainty,
+    therapy_scenario_summary,
+    compact_metrics,
+    regime_positive_fva=None,
+):
+    question_lower = question.lower()
+
+    if not question_mentions_structured_result(question):
+        return None
+
+    if detect_therapy(question) is not None:
+        context = build_therapy_scenario_context(
+            question=question,
+            therapy_scenario_summary=therapy_scenario_summary,
+        )
+
+        if context:
+            return context
+
+    if any(
+        term in question_lower
+        for term in [
+            "model",
+            "wape",
+            "mae",
+            "bias",
+            "naive",
+            "xgboost",
+            "hybrid",
+        ]
+    ):
+        context = build_model_performance_context(
+            question=question,
+            compact_metrics=compact_metrics,
+        )
+
+        if context:
+            return context
+
+    if any(
+        term in question_lower
+        for term in [
+            "fva",
+            "added value",
+            "add value",
+            "regime",
+            "where does",
+        ]
+    ):
+        context = build_regime_value_context(
+            question=question,
+            regime_positive_fva=regime_positive_fva,
+        )
+
+        if context:
+            return context
+
+    if any(
+        term in question_lower
+        for term in [
+            "scenario",
+            "p10",
+            "p50",
+            "p90",
+            "uncertainty",
+            "downside",
+            "upside",
+        ]
+    ):
+        context = build_overall_scenario_context(
+            question=question,
+            scenario_summary_with_uncertainty=scenario_summary_with_uncertainty,
+        )
+
+        if context:
+            return context
+
+    return None
 
 
 # ------------------------------------------------------------
 # Tabs
 # ------------------------------------------------------------
 
-tab_summary, tab_forecast, tab_performance, tab_scenarios, tab_evidence, tab_governance = st.tabs(
+tab_summary, tab_performance, tab_scenarios, tab_rag, tab_governance = st.tabs(
     [
         "Executive Summary",
-        "Forecast",
         "Model Performance",
         "Scenario Intelligence",
-        "Evidence & Explanation",
+        "Project RAG",
         "Governance",
     ]
 )
 
 
 # ------------------------------------------------------------
-# Tab 1: Executive Summary
+# Executive Summary
 # ------------------------------------------------------------
 
 with tab_summary:
-    st.subheader("Decision Summary")
-
-    if not notebook_3_conclusion.empty:
-        for _, row in notebook_3_conclusion.iterrows():
-            st.markdown(f"**{row['question']}**")
-            st.write(row["answer"])
-    else:
-        st.write(
-            "Recent demand was strongest overall, while patient and market signals "
-            "added value mainly for event-regime interpretation and scenario planning."
-        )
-
-    st.markdown("### Headline Findings")
-
-    col1, col2, col3 = st.columns(3)
-
-    naive_12 = compact_metrics.loc[
-        (compact_metrics["horizon_months"] == 12)
-        & (compact_metrics["model"] == "naive"),
-        "WAPE",
-    ]
-
-    hybrid_3_persistence = pd.Series(dtype=float)
-
-    if not regime_positive_fva.empty and "target_market_regime" in regime_positive_fva.columns:
-        hybrid_3_persistence = regime_positive_fva.loc[
-            (regime_positive_fva["horizon_months"] == 3)
-            & (regime_positive_fva["target_market_regime"] == "persistence_change"),
-            "hybrid_xgboost_fva_vs_naive",
-        ]
-
-    combined_downside = scenario_summary.loc[
-        scenario_summary["scenario_name"] == "Combined downside",
-        "percent_change",
-    ]
-
-    col1.metric(
-        "Best Overall Benchmark",
-        "Naive",
-        "Recent demand dominated routine forecasting",
-    )
-
-    col2.metric(
-        "12-Month Naive WAPE",
-        pct(float(naive_12.iloc[0])) if len(naive_12) else "NA",
-    )
-
-    col3.metric(
-        "Combined Downside Impact",
-        pct(float(combined_downside.iloc[0])) if len(combined_downside) else "NA",
-    )
-
-    if len(hybrid_3_persistence):
-        st.info(
-            "Hybrid XGBoost added value in the 3-month persistence-change regime "
-            f"with FVA vs naive of {pct(float(hybrid_3_persistence.iloc[0]))}."
-        )
-
-    st.markdown("### What This POC Is Actually For")
-
-    st.write(
-        """
-The point is not to prove that one complex model always wins. The point is to
-separate routine forecasting from planning intelligence. In stable periods,
-recent sales can be very hard to beat. But for access changes, persistence shifts,
-competition, epidemiology changes, and supply constraints, patient-informed
-scenario analysis gives decision-makers a way to understand risk.
-"""
-    )
-
-
-# ------------------------------------------------------------
-# Tab 2: Forecast
-# ------------------------------------------------------------
-
-with tab_forecast:
-    st.subheader("Forecast Explorer")
-
-    filtered_forecast = forecast_results.loc[
-        (forecast_results["horizon_months"] == selected_horizon)
-        & (forecast_results["therapy"] == selected_therapy)
-        & (forecast_results["region"] == selected_region)
-    ].copy()
-
-    filtered_forecast = filtered_forecast.sort_values("target_month_index")
-
-    prediction_columns = [
-        "actual_sales_units",
-        "naive_prediction",
-        "seasonal_naive_prediction",
-        "historical_xgboost_prediction",
-        "patient_driver_prediction",
-        "hybrid_xgboost_prediction",
-    ]
-
-    plot_columns = safe_columns(filtered_forecast, prediction_columns)
-
-    if filtered_forecast.empty:
-        st.warning("No forecast rows found for this selection.")
-    else:
-        long_forecast = filtered_forecast[
-            ["target_month_index"] + plot_columns
-        ].melt(
-            id_vars="target_month_index",
-            var_name="series",
-            value_name="units",
-        )
-
-        long_forecast["series"] = long_forecast["series"].map(clean_model_name)
-
-        fig = px.line(
-            long_forecast,
-            x="target_month_index",
-            y="units",
-            color="series",
-            markers=True,
-            title=f"{selected_therapy} | {selected_region} | {int(selected_horizon)}-Month Horizon",
-        )
-
-        st.plotly_chart(fig, use_container_width=True)
-
-        st.dataframe(
-            filtered_forecast[
-                safe_columns(
-                    filtered_forecast,
-                    [
-                        "forecast_origin_month_index",
-                        "target_month_index",
-                        "actual_sales_units",
-                        "naive_prediction",
-                        "historical_xgboost_prediction",
-                        "patient_driver_prediction",
-                        "hybrid_xgboost_prediction",
-                        "target_market_regime",
-                    ],
-                )
-            ].round(3),
-            use_container_width=True,
-        )
-
-
-# ------------------------------------------------------------
-# Tab 3: Model Performance
-# ------------------------------------------------------------
-
-with tab_performance:
-    st.subheader("Model Performance and Forecast Value Add")
+    st.header("Executive Summary")
 
     st.markdown(
         """
-WAPE, MAE, and bias are evaluated using rolling-origin validation. Forecast Value
-Add compares each method against the naive baseline.
+This project is a synthetic pharmaceutical analytics POC. It tests when a forecaster
+should rely on recent observed demand and when patient or market signals add value.
+
+The main finding is intentionally realistic: **recent demand was the strongest overall
+forecasting benchmark**, because treated oncology demand is persistent. The patient and
+market layer is most useful for **event interpretation and scenario planning**, not for
+beating naive forecasting in every window.
 """
+    )
+
+    col1, col2, col3 = st.columns(3)
+
+    total_forecasts = len(forecast_results) if forecast_results is not None else np.nan
+    total_scenarios = scenario_summary_with_uncertainty["scenario_name"].nunique()
+    total_therapies = therapy_scenario_summary["therapy"].nunique()
+
+    col1.metric("Forecast Rows Evaluated", fmt_units(total_forecasts))
+    col2.metric("Planning Scenarios", int(total_scenarios))
+    col3.metric("Therapies", int(total_therapies))
+
+    st.subheader("What The Project Proves")
+
+    st.markdown(
+        """
+- Simple baselines matter. Complex models must earn their place.
+- Forecast Information Set rules prevent future-data leakage.
+- Patient and market signals help explain access, competition, persistence, epidemiology, and supply risks.
+- Scenario intelligence creates the most client-facing value.
+"""
+    )
+
+    if notebook_3_conclusion is not None:
+        st.subheader("Notebook 3 Conclusion")
+        st.dataframe(notebook_3_conclusion, use_container_width=True)
+
+
+# ------------------------------------------------------------
+# Model Performance
+# ------------------------------------------------------------
+
+with tab_performance:
+    st.header("Model Performance")
+
+    st.caption(
+        "Lower WAPE and MAE are better. Bias below zero means under-forecasting."
+    )
+
+    display_metrics = compact_metrics.copy()
+
+    st.subheader("Compact Model Comparison")
+    st.dataframe(
+        format_percent_column(display_metrics, ["WAPE", "Bias"]),
+        use_container_width=True,
     )
 
     fig = px.line(
@@ -380,383 +807,340 @@ Add compares each method against the naive baseline.
         y="WAPE",
         color="model",
         markers=True,
-        title="WAPE by Forecast Horizon",
-    )
-
-    fig.update_layout(
-        xaxis_title="Forecast Horizon",
-        yaxis_title="WAPE",
+        title="Forecast Accuracy by Horizon",
+        labels={
+            "horizon_months": "Forecast Horizon",
+            "WAPE": "WAPE",
+            "model": "Model",
+        },
     )
 
     st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("### Compact Model Comparison")
-    st.dataframe(compact_metrics.round(4), use_container_width=True)
+    best_by_horizon = (
+        compact_metrics
+        .sort_values(["horizon_months", "WAPE"])
+        .groupby("horizon_months", as_index=False)
+        .first()
+    )
 
-    st.markdown("### Regime Windows with Positive FVA")
-    if regime_positive_fva.empty:
-        st.info("No regime-level positive FVA file found.")
-    else:
-        st.dataframe(regime_positive_fva.round(4), use_container_width=True)
+    st.subheader("Best Model By Forecast Horizon")
+    st.dataframe(
+        format_percent_column(best_by_horizon, ["WAPE", "Bias"]),
+        use_container_width=True,
+    )
 
-    st.markdown("### Performance by Horizon and Regime")
-    if metrics_by_horizon_regime.empty:
-        st.info("Regime-level performance file not found.")
-    else:
-        st.dataframe(metrics_by_horizon_regime.round(4), use_container_width=True)
+    st.info(
+        "Interpretation: naive demand wins overall because recent sales are a strong "
+        "proxy for active treated patient stock in a persistent oncology market. "
+        "That is a defensible result, not a project failure."
+    )
+
+    if regime_positive_fva is not None:
+        st.subheader("Event Windows Where Non-Naive Methods Added Value")
+        st.caption(
+            "This table is the more nuanced story: patient or hybrid signals can help "
+            "inside specific market regimes even when naive wins overall."
+        )
+        st.dataframe(regime_positive_fva, use_container_width=True)
 
 
 # ------------------------------------------------------------
-# Tab 4: Scenario Intelligence
+# Scenario Intelligence
 # ------------------------------------------------------------
 
 with tab_scenarios:
-    st.subheader("Scenario Intelligence")
+    st.header("Scenario Intelligence")
 
-    st.markdown(
-        """
-Scenario analysis answers planning questions that model accuracy alone cannot answer.
-The numerical engine has already calculated these results. This tab translates them
-into business planning language.
-"""
+    scenario_names = list(
+        scenario_summary_with_uncertainty["scenario_name"].dropna().unique()
     )
 
-    scenario_summary_display = add_client_scenario_labels(scenario_summary)
-
-    scenario_options = scenario_summary_display[
-        ["scenario_name", "client_scenario_name"]
-    ].drop_duplicates()
-
-    selected_client_scenario = st.selectbox(
-        "Planning scenario",
-        scenario_options["client_scenario_name"].tolist(),
-        index=0,
+    selected_scenario = st.selectbox(
+        "Select scenario",
+        scenario_names,
+        format_func=lambda x: SCENARIO_CLIENT_LABELS.get(x, x),
     )
 
-    selected_scenario = scenario_options.loc[
-        scenario_options["client_scenario_name"] == selected_client_scenario,
-        "scenario_name",
+    selected_summary = scenario_summary_with_uncertainty[
+        scenario_summary_with_uncertainty["scenario_name"] == selected_scenario
     ].iloc[0]
 
-    selected_scenario_row = scenario_summary_display.loc[
-        scenario_summary_display["scenario_name"] == selected_scenario
-    ].iloc[0]
+    st.subheader(SCENARIO_CLIENT_LABELS.get(selected_scenario, selected_scenario))
+    st.caption(
+        SCENARIO_CLIENT_EXPLANATIONS.get(
+            selected_scenario,
+            "Scenario result from the saved output table.",
+        )
+    )
 
-    st.info(selected_scenario_row["client_explanation"])
-
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
 
     col1.metric(
         "Baseline Demand Forecast",
-        num(selected_scenario_row["baseline_forecast_units"]),
+        fmt_units(selected_summary["baseline_forecast_units"]),
     )
 
     col2.metric(
         "Scenario Demand Forecast",
-        num(selected_scenario_row["scenario_forecast_units"]),
-        delta=num(selected_scenario_row["absolute_change_units"]),
+        fmt_units(selected_summary["scenario_forecast_units"]),
     )
 
     col3.metric(
         "Change vs Baseline",
-        pct(selected_scenario_row["percent_change"]),
+        fmt_units(selected_summary["absolute_change_units"]),
+        delta=fmt_pct(selected_summary["percent_change"]),
     )
 
-    st.markdown("### Planning Range")
+    col4.metric(
+        "Expected Planning Case",
+        fmt_units(selected_summary.get("p50")),
+    )
+
+    st.subheader("Planning Range")
+
+    range_cols = st.columns(3)
+
+    range_cols[0].metric(
+        "Conservative Planning Case",
+        fmt_units(selected_summary.get("p10")),
+    )
+
+    range_cols[1].metric(
+        "Expected Planning Case",
+        fmt_units(selected_summary.get("p50")),
+    )
+
+    range_cols[2].metric(
+        "Upside Planning Case",
+        fmt_units(selected_summary.get("p90")),
+    )
 
     st.caption(
-        "Conservative, expected, and upside planning estimates correspond to "
-        "P10, P50, and P90 from the Monte Carlo uncertainty simulation."
+        "P10, P50, and P90 are simulated scenario planning ranges. "
+        "They should be read as conservative, expected, and upside planning cases, "
+        "not as clinical confidence intervals."
     )
 
-    range_col1, range_col2, range_col3 = st.columns(3)
-
-    range_col1.metric(
-        "Conservative Planning Case",
-        num(selected_scenario_row["p10"]),
-        help="P10: 10% of simulated outcomes were below this value.",
-    )
-
-    range_col2.metric(
-        "Expected Planning Case",
-        num(selected_scenario_row["p50"]),
-        help="P50: median simulated outcome.",
-    )
-
-    range_col3.metric(
-        "Upside Planning Case",
-        num(selected_scenario_row["p90"]),
-        help="P90: 90% of simulated outcomes were below this value.",
-    )
-
-    plot_df = scenario_summary_display.loc[
-        scenario_summary_display["scenario_name"] != "Base case"
+    selected_therapy_rows = therapy_scenario_display[
+        therapy_scenario_display["scenario_name"] == selected_scenario
     ].copy()
 
+    st.subheader("Therapy-Level Impact")
+    st.dataframe(
+        format_percent_column(
+            selected_therapy_rows[
+                [
+                    "scenario_label",
+                    "therapy",
+                    "baseline_forecast_units",
+                    "scenario_forecast_units",
+                    "absolute_change_units",
+                    "percent_change",
+                ]
+            ],
+            ["percent_change"],
+        ),
+        use_container_width=True,
+    )
+
     fig = px.bar(
-        plot_df,
-        x="absolute_change_units",
-        y="client_scenario_name",
-        orientation="h",
-        title="Scenario Impact vs Baseline Demand Forecast",
+        selected_therapy_rows,
+        x="therapy",
+        y="absolute_change_units",
+        title="Therapy-Level Change vs Baseline",
         labels={
-            "absolute_change_units": "Change in forecasted units",
-            "client_scenario_name": "Planning scenario",
+            "therapy": "Therapy",
+            "absolute_change_units": "Change in Forecast Units",
         },
     )
 
-    fig.add_vline(x=0, line_width=1, line_color="black")
     st.plotly_chart(fig, use_container_width=True)
 
-    fig_uncertainty = go.Figure()
-
-    fig_uncertainty.add_trace(
-        go.Scatter(
-            x=scenario_summary_display["client_scenario_name"],
-            y=scenario_summary_display["p50"],
-            mode="markers",
-            error_y=dict(
-                type="data",
-                symmetric=False,
-                array=scenario_summary_display["p90"] - scenario_summary_display["p50"],
-                arrayminus=scenario_summary_display["p50"] - scenario_summary_display["p10"],
-            ),
-            name="Planning range",
+    if selected_scenario == "Access downside":
+        st.info(
+            "For a uniform access downside, similar percentage declines across "
+            "therapies are expected by design. The more useful client insight is "
+            "absolute unit exposure: high-volume therapies carry the largest "
+            "commercial risk."
         )
+
+    scenario_chart_df = scenario_summary_display[
+        scenario_summary_display["scenario_name"] != "Base case"
+    ].copy()
+
+    st.subheader("Scenario Impact vs Baseline")
+
+    fig = px.bar(
+        scenario_chart_df.sort_values("absolute_change_units"),
+        x="absolute_change_units",
+        y="scenario_label",
+        orientation="h",
+        title="Portfolio-Level Scenario Impact",
+        labels={
+            "absolute_change_units": "Change in Forecast Units",
+            "scenario_label": "Scenario",
+        },
     )
 
-    fig_uncertainty.update_layout(
-        title="Scenario Planning Range",
-        xaxis_title="Planning scenario",
-        yaxis_title="Forecasted demand units",
-    )
+    st.plotly_chart(fig, use_container_width=True)
 
-    st.plotly_chart(fig_uncertainty, use_container_width=True)
-
-    st.markdown("### Therapy-Level Impact")
-
-    if not therapy_scenario_summary.empty:
-        therapy_rows = therapy_scenario_summary.loc[
-            therapy_scenario_summary["scenario_name"] == selected_scenario
-        ].copy()
-
-        therapy_rows = therapy_rows.rename(
-            columns={
-                "therapy": "Therapy",
-                "baseline_forecast_units": "Baseline forecast",
-                "scenario_forecast_units": "Scenario forecast",
-                "absolute_change_units": "Change in units",
-                "percent_change": "Percent change",
-            }
-        )
-
-        st.dataframe(
-            therapy_rows.round(4),
-            use_container_width=True,
-        )
-
-        st.caption(
-            "For uniform access downside, percentage changes are expected to look similar "
-            "across therapies because the same access multiplier is applied broadly. "
-            "The more useful business signal is which therapy carries the largest absolute unit impact."
-        )
-    else:
-        st.info("Therapy-level scenario output file not found.")
 
 # ------------------------------------------------------------
-# Tab 5: Evidence & Explanation
+# Project RAG
 # ------------------------------------------------------------
 
-with tab_evidence:
-    st.subheader("Evidence & Explanation")
+with tab_rag:
+    st.header("Project RAG Assistant")
 
-    st.markdown(
-        """
-The numerical engine has already calculated the forecasts and scenarios.
-The RAG layer retrieves relevant assumption and methodology evidence.
-The LLM explains the result, but it does not calculate or change official values.
-"""
+    st.caption(
+        "Ask questions about the forecasting method, results, scenarios, uncertainty, "
+        "assumptions, leakage controls, limitations, or RAG boundary. Numerical answers "
+        "come from saved output tables; explanation comes from retrieved project evidence."
     )
-
-    st.markdown("### RAG Boundary")
-
-    boundary_table = pd.DataFrame(
-        [
-            {
-                "Component": "Numerical engine",
-                "Owns": "Forecasts, scenario calculations, uncertainty outputs",
-                "Does not own": "Evidence retrieval or free-text explanation",
-            },
-            {
-                "Component": "RAG retriever",
-                "Owns": "Finding relevant assumption and methodology evidence",
-                "Does not own": "Calculating forecast values",
-            },
-            {
-                "Component": "LLM",
-                "Owns": "Grounded business explanation",
-                "Does not own": "Changing model outputs",
-            },
-        ]
-    )
-
-    st.dataframe(boundary_table, use_container_width=True)
-
-    st.markdown("### Explain a Scenario")
-
-    selected_for_explanation = st.selectbox(
-        "Choose scenario to explain",
-        scenario_summary["scenario_name"].tolist(),
-        key="explain_scenario",
-    )
-
-    scenario_context_row = scenario_summary.loc[
-        scenario_summary["scenario_name"] == selected_for_explanation
-    ].iloc[0]
-
-    therapy_context = ""
-
-    if not therapy_scenario_summary.empty:
-        therapy_rows = therapy_scenario_summary.loc[
-            therapy_scenario_summary["scenario_name"] == selected_for_explanation
-        ].copy()
-
-        therapy_context = therapy_rows[
-            [
-                "therapy",
-                "baseline_forecast_units",
-                "scenario_forecast_units",
-                "absolute_change_units",
-                "percent_change",
-            ]
-        ].round(3).to_string(index=False)
-
-    scenario_context = f"""
-Scenario: {scenario_context_row['scenario_name']}
-Description: {scenario_context_row.get('description', '')}
-
-Baseline forecast: {scenario_context_row['baseline_forecast_units']:.1f} units
-Scenario forecast: {scenario_context_row['scenario_forecast_units']:.1f} units
-Absolute change: {scenario_context_row['absolute_change_units']:.1f} units
-Percent change: {scenario_context_row['percent_change']:.1%}
-
-Uncertainty:
-P10: {scenario_context_row['p10']:.1f}
-P50: {scenario_context_row['p50']:.1f}
-P90: {scenario_context_row['p90']:.1f}
-
-Therapy-level impact:
-{therapy_context}
-"""
-
-    st.code(scenario_context, language="text")
-
-    user_question = st.text_area(
-    "Question for RAG explanation",
-    value=(
-        f"Explain the {selected_for_explanation} scenario in simple business language. "
-        "First explain what this project is trying to do, then explain the forecasting method, "
-        "why recent demand was the strongest overall benchmark, what the selected scenario changes, "
-        "how the scenario result should be interpreted, what evidence or assumptions support the explanation, "
-        "and what limitations a pharma client or senior data scientist should keep in mind."
-    ),
-    height=140,
-)
 
     if not RAG_AVAILABLE:
-        st.warning(
-            "RAG utilities are not available yet. Check rag/rag_utils.py and requirements.txt."
-        )
+        st.error("RAG utilities could not be imported.")
+        st.exception(RAG_IMPORT_ERROR)
+        st.stop()
 
-        if RAG_IMPORT_ERROR:
-            st.code(RAG_IMPORT_ERROR)
+    user_question = st.text_area(
+        "Project question",
+        value=(
+            "Why was recent demand the strongest overall benchmark, "
+            "and what limitations should we keep in mind?"
+        ),
+        height=90,
+    )
 
-    else:
-        col1, col2 = st.columns(2)
+    include_selected_scenario = st.checkbox(
+        "Include selected scenario numbers when relevant",
+        value=False,
+    )
 
-        with col1:
-            preview_clicked = st.button("Preview Retrieved Evidence")
+    rag_selected_scenario = st.selectbox(
+        "Optional scenario context",
+        scenario_names,
+        format_func=lambda x: SCENARIO_CLIENT_LABELS.get(x, x),
+        key="rag_scenario_select",
+    )
 
-        with col2:
-            explain_clicked = st.button("Generate Grounded Explanation")
+    col1, col2 = st.columns(2)
 
-        if preview_clicked:
-            with st.spinner("Retrieving evidence chunks..."):
-                evidence_text = evidence_preview(
+    with col1:
+        preview_clicked = st.button("Preview Retrieved Evidence")
+
+    with col2:
+        answer_clicked = st.button("Answer with Project RAG")
+
+    if preview_clicked:
+        if not user_question.strip():
+            st.warning("Please enter a project question first.")
+
+        else:
+            with st.spinner("Retrieving evidence..."):
+                preview = evidence_preview(
                     query=user_question,
                     k=4,
                 )
 
-            st.markdown("### Retrieved Evidence")
-            st.text(evidence_text)
+            st.subheader("Retrieved Evidence Preview")
+            st.text(preview)
 
-        if explain_clicked:
-            with st.spinner(
-                "Retrieving evidence and generating grounded explanation..."
-            ):
-                result = explain_scenario_with_rag(
-                    scenario_context=scenario_context,
-                    user_question=user_question,
-                    k=4,
+    if answer_clicked:
+        if not user_question.strip():
+            st.warning("Please enter a project question.")
+
+        else:
+            structured_context = build_structured_context_for_question(
+                question=user_question,
+                scenario_summary_with_uncertainty=scenario_summary_with_uncertainty,
+                therapy_scenario_summary=therapy_scenario_summary,
+                compact_metrics=compact_metrics,
+                regime_positive_fva=regime_positive_fva,
+            )
+
+            if include_selected_scenario and structured_context is None:
+                scenario_question = f"Explain scenario {rag_selected_scenario}"
+
+                structured_context = build_overall_scenario_context(
+                    question=scenario_question,
+                    scenario_summary_with_uncertainty=scenario_summary_with_uncertainty,
                 )
 
-            st.markdown("### Grounded Explanation")
-            st.write(result["answer"])
+            with st.spinner("Retrieving evidence and generating grounded answer..."):
+                try:
+                    result = answer_question_with_rag(
+                        user_question=user_question,
+                        structured_context=structured_context,
+                        k=5,
+                    )
 
-            with st.expander("Retrieved evidence used"):
-                st.text(result["evidence_text"])
+                    st.subheader("Grounded Answer")
+                    st.markdown(result["answer"])
 
-    if RAG_DOCS.exists():
-        md_files = sorted(RAG_DOCS.glob("*.md"))
+                    if result.get("model_used"):
+                        st.caption(f"Model used: {result['model_used']}")
 
-        if md_files:
-            st.markdown("### Evidence Documents Available")
+                    if result.get("sources"):
+                        st.caption(
+                            "Evidence sources: "
+                            + ", ".join(result["sources"])
+                        )
 
-            for file in md_files:
-                st.write(f"- {file.name}")
-        else:
-            st.info("No evidence markdown files found yet.")
-    else:
-        st.info("RAG evidence folder has not been populated yet.")
+                    if structured_context:
+                        with st.expander("Structured data used for this answer"):
+                            st.text(structured_context)
+
+                except Exception as error:
+                    st.error(
+                        "The RAG answer could not be generated. "
+                        "Check Streamlit secrets, Gemini model access, and vector store setup."
+                    )
+                    st.exception(error)
+
+                    if structured_context:
+                        st.subheader("Structured Result Available")
+                        st.text(structured_context)
+
 
 # ------------------------------------------------------------
-# Tab 6: Governance
+# Governance
 # ------------------------------------------------------------
 
 with tab_governance:
-    st.subheader("Governance and Claim Discipline")
+    st.header("Governance and Claim Discipline")
 
-    st.markdown("### Senior Review Gate")
+    st.markdown(
+        """
+This app separates **calculation** from **explanation**.
 
-    if senior_review_gate.empty:
-        st.info("Senior review gate file not found.")
-    else:
-        st.dataframe(senior_review_gate, use_container_width=True)
+- The notebooks and CSV outputs are the source of numerical truth.
+- The structured router finds relevant saved results.
+- RAG retrieves methodology and evidence documents.
+- Gemini explains the result but does not create official numbers.
+"""
+    )
 
-    st.markdown("### Claim Discipline")
-
-    if claim_discipline.empty:
-        st.info("Claim discipline file not found.")
-    else:
+    if claim_discipline is not None:
+        st.subheader("Claim Discipline")
         st.dataframe(claim_discipline, use_container_width=True)
 
-    st.markdown("### Feature Provenance")
+    if senior_review_gate is not None:
+        st.subheader("Senior Review Gate")
+        st.dataframe(senior_review_gate, use_container_width=True)
 
-    if feature_provenance.empty:
-        st.info("Feature provenance file not found.")
-    else:
-        st.dataframe(feature_provenance, use_container_width=True)
+    st.subheader("What This Project Can Claim")
 
-    st.markdown("### Assumption Registry")
+    st.success(
+        "Recent demand was the strongest overall benchmark in this synthetic oncology "
+        "market, while patient and market signals added value for event interpretation "
+        "and scenario planning."
+    )
 
-    if assumption_registry.empty:
-        st.info("Assumption registry file not found.")
-    else:
-        st.dataframe(assumption_registry, use_container_width=True)
+    st.subheader("Disclaimer")
 
-    st.markdown("### Feature Availability Audit")
-
-    if feature_availability_audit.empty:
-        st.info("Feature availability audit file not found.")
-    else:
-        st.dataframe(feature_availability_audit, use_container_width=True)
+    st.warning(
+        "We do not claim clinical validation, real-world oncology proof, "
+        "or that hybrid ML beats simpler methods across all horizons."
+    )
