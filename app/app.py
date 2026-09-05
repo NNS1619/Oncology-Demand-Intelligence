@@ -120,7 +120,7 @@ require_data(scenario_summary, "data/outputs/scenario_summary_with_uncertainty.c
 # Sidebar
 # ------------------------------------------------------------
 
-st.sidebar.title("POC Controls")
+st.sidebar.title("Controls ⚙️")
 
 available_horizons = sorted(forecast_results["horizon_months"].dropna().unique())
 available_therapies = sorted(forecast_results["therapy"].dropna().unique())
@@ -563,10 +563,17 @@ Therapy-level impact:
 
     st.code(scenario_context, language="text")
 
-    user_question = st.text_input(
-        "Optional question for RAG",
-        value=f"Explain the {selected_for_explanation} scenario using methodology, assumptions, and scenario logic.",
-    )
+    user_question = st.text_area(
+    "Question for RAG explanation",
+    value=(
+        f"Explain the {selected_for_explanation} scenario in simple business language. "
+        "First explain what this project is trying to do, then explain the forecasting method, "
+        "why recent demand was the strongest overall benchmark, what the selected scenario changes, "
+        "how the scenario result should be interpreted, what evidence or assumptions support the explanation, "
+        "and what limitations a pharma client or senior data scientist should keep in mind."
+    ),
+    height=140,
+)
 
     if not RAG_AVAILABLE:
         st.warning(
