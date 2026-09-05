@@ -1,0 +1,13 @@
+table_name,grain,purpose
+assumption_registry,one row per assumption,"Stores assumption values, source type, confidence, and scenario eligibility."
+epidemiology_monthly,region × month,"Creates population, latent disease incidence, diagnosed NSCLC, and metastatic diagnoses."
+patient_segment_inputs,region × month × biomarker × line of therapy,Splits metastatic patients into biomarker and treatment-line segments.
+therapy_eligibility,therapy × biomarker × line of therapy,Defines which therapies are clinically eligible for which patient segments.
+market_calendar_events,one row per market event,"Records announcement timing, effective timing, and information category."
+market_access_monthly,therapy × region × month,Defines access over time and when access information became known.
+therapy_positioning,therapy × biomarker × line of therapy,Defines synthetic therapy attractiveness within eligible segments.
+therapy_overlap,focal therapy × competitor therapy,Measures patient-segment overlap between therapies.
+allocation_options,region × month × biomarker × line of therapy × therapy,"Converts eligibility, access, launch maturity, and positioning into treatment shares."
+patient_flow,region × month × biomarker × line of therapy × therapy,"Simulates starts, discontinuation, progression, active patients, and patient-months."
+patient_demand,region × month × biomarker × line of therapy × therapy,Converts patient-months into latent demand and observed sales.
+commercial_demand,therapy × region × month,Final raw demand table used later for forecasting.

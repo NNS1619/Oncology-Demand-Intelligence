@@ -1,0 +1,5 @@
+information_category,allowed_use,example
+observed_historical_information,Allowed if observed on or before forecast origin.,Observed sales through month tau.
+published_forward_information,Allowed only if announcement month is on or before forecast origin.,"Therapy D launch announced in month 78, effective in month 85."
+planning_assumption,"Allowed for scenario analysis, not for ordinary accuracy testing unless explicitly defined at forecast origin.",User-defined downside scenario where access falls to 60%.
+forbidden_information,Not allowed before it becomes observable.,Unannounced Therapy A persistence deterioration before its effects appear in observed data.

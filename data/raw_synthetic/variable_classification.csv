@@ -1,0 +1,16 @@
+variable,classification,explanation
+population,SIMULATED TRUTH,Generated from starting regional population and population growth assumption.
+annual_latent_disease_incidence_per_100k_truth,SIMULATED TRUTH,Latent disease rate used to generate incident disease cases.
+diagnosis_rate_truth,ASSUMED PARAMETER,Synthetic assumption used to convert latent disease into diagnosed NSCLC.
+new_diagnosed_nsclc_cases,DERIVED VARIABLE,Incident disease cases multiplied by diagnosis rate.
+new_metastatic_diagnoses,DERIVED VARIABLE,Diagnosed NSCLC cases multiplied by metastatic-stage share.
+biomarker_status,DERIVED VARIABLE,Patient segment assigned using biomarker prevalence assumption.
+eligible,ASSUMED PARAMETER,Clinical eligibility rule defined by synthetic therapy design.
+access_rate_truth,SIMULATED TRUTH,True access rate in the synthetic world.
+access_known_from_month,FORECAST INFORMATION SET CONTROL,Prevents models from using access information before it was knowable.
+treatment_share,DERIVED VARIABLE,"Calculated from eligibility, launch status, access, maturity, and positioning."
+new_starts,DERIVED VARIABLE,Candidate pool multiplied by initiation rate and treatment share.
+active_patients_end,DERIVED VARIABLE,Previous active patients plus starts minus discontinuations.
+patient_months,DERIVED VARIABLE,Approximation of treated exposure during the month.
+latent_demand_units,DERIVED VARIABLE,Patient-months multiplied by units per patient-month.
+observed_sales_units,OBSERVED SYNTHETIC OUTPUT,Final observed sales after any supply constraint.
