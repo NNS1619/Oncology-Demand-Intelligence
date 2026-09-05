@@ -186,7 +186,7 @@ def format_evidence(documents):
 
 def build_scenario_explanation_prompt(scenario_context, evidence_text):
     return f"""
-You are explaining a pharmaceutical oncology demand forecasting scenario.
+You are explaining a synthetic pharmaceutical oncology demand forecasting and scenario-intelligence POC.
 
 Use ONLY the structured scenario output and retrieved evidence below.
 
@@ -194,9 +194,10 @@ Rules:
 - Do not invent numerical values.
 - Do not recalculate the forecast.
 - Do not claim clinical validation.
+- Explain that this is a synthetic case study.
 - Explain access as reachable market/treatment availability, not clinical eligibility.
+- Keep the tone simple, professional, and client-ready.
 - If evidence is insufficient, say what is missing.
-- Keep the tone clear, professional, and client-ready.
 
 STRUCTURED SCENARIO OUTPUT:
 {scenario_context}
@@ -204,13 +205,17 @@ STRUCTURED SCENARIO OUTPUT:
 RETRIEVED EVIDENCE:
 {evidence_text}
 
-Write the answer in plain language with these sections:
+Write one clear explanation that covers:
 
-1. What changed versus baseline
-2. What assumptions drove the change
-3. Which therapies were most affected
-4. Why this matters for pharmaceutical planning
-5. What a human reviewer should validate before real-world use
+1. What this project is trying to do
+2. How the forecasting comparison works in simple terms
+3. Why recent demand can be a very strong benchmark
+4. What the selected scenario changes versus baseline
+5. What the scenario result means numerically and commercially
+6. Which therapies are most affected, if available
+7. What retrieved evidence or documented assumptions support the explanation
+8. What a pharma client or senior data scientist should validate before real-world use
+9. One short final takeaway
 """
 
 
