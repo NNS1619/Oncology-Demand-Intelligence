@@ -1,5 +1,6 @@
 # ============================================================
 # RAG Utilities for Grounded Scenario Explanation
+# Gemini + LangChain + FAISS
 # ============================================================
 
 from pathlib import Path
@@ -7,7 +8,10 @@ from pathlib import Path
 from dotenv import load_dotenv
 from langchain_community.document_loaders import DirectoryLoader, TextLoader
 from langchain_community.vectorstores import FAISS
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_google_genai import (
+    ChatGoogleGenerativeAI,
+    GoogleGenerativeAIEmbeddings,
+)
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 
@@ -15,6 +19,19 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 EVIDENCE_DOCS_DIR = PROJECT_ROOT / "rag" / "evidence_docs"
 VECTOR_STORE_DIR = PROJECT_ROOT / "rag" / "vector_store"
+
+
+def get_embeddings_model():
+    return GoogleGenerativeAIEmbeddings(
+        model="models/gemini-embedding-001"
+    )
+
+
+def get_chat_model():
+    return ChatGoogleGenerativeAI(
+        model="gemini-1.5-flash",
+        temperature=0,
+    )
 
 
 def load_evidence_documents():
@@ -58,7 +75,9 @@ def split_documents(documents):
 
 def build_vector_store():
     """
-    Builds and saves a FAISS vector store from rag/evidence_docs/*.md.
+    Builds and saves FAISS from rag/evidence_docs/*.md.
+
+    This creates real vector embeddings using Gemini.
     """
 
     load_dotenv()
@@ -66,9 +85,7 @@ def build_vector_store():
     documents = load_evidence_documents()
     chunks = split_documents(documents)
 
-    embeddings = OpenAIEmbeddings(
-        model="text-embedding-3-small"
-    )
+    embeddings = get_embeddings_model()
 
     vector_store = FAISS.from_documents(
         documents=chunks,
@@ -84,14 +101,14 @@ def build_vector_store():
 
 def load_vector_store():
     """
-    Loads FAISS if it exists. If not, builds it from evidence docs.
+    Loads FAISS if present. If absent, builds it from evidence docs.
+
+    On Streamlit Cloud, this means the first RAG click may take longer.
     """
 
     load_dotenv()
 
-    embeddings = OpenAIEmbeddings(
-        model="text-embedding-3-small"
-    )
+    embeddings = get_embeddings_model()
 
     if VECTOR_STORE_DIR.exists():
         return FAISS.load_local(
@@ -104,10 +121,6 @@ def load_vector_store():
 
 
 def retrieve_evidence(query, k=4):
-    """
-    Retrieves the most relevant evidence chunks.
-    """
-
     vector_store = load_vector_store()
 
     retriever = vector_store.as_retriever(
@@ -118,10 +131,6 @@ def retrieve_evidence(query, k=4):
 
 
 def format_evidence(documents):
-    """
-    Converts retrieved documents into readable text.
-    """
-
     formatted_chunks = []
 
     for index, doc in enumerate(documents, start=1):
@@ -136,15 +145,6 @@ def format_evidence(documents):
 
 
 def build_scenario_explanation_prompt(scenario_context, evidence_text):
-    """
-    Builds a controlled prompt.
-
-    Boundary:
-    - numerical engine calculates
-    - RAG retrieves
-    - LLM explains
-    """
-
     return f"""
 You are explaining a pharmaceutical oncology demand forecasting scenario.
 
@@ -171,7 +171,10 @@ Write a clear business explanation with:
 
 def explain_scenario_with_rag(scenario_context, user_question=None, k=4):
     """
-    Generates a grounded scenario explanation.
+    Boundary:
+    - numerical engine calculates scenario_context
+    - RAG retrieves evidence
+    - Gemini explains the already-calculated result
     """
 
     load_dotenv()
@@ -189,10 +192,7 @@ def explain_scenario_with_rag(scenario_context, user_question=None, k=4):
         evidence_text=evidence_text,
     )
 
-    llm = ChatOpenAI(
-        model="gpt-4o-mini",
-        temperature=0,
-    )
+    llm = get_chat_model()
 
     response = llm.invoke(prompt)
 
@@ -205,8 +205,7 @@ def explain_scenario_with_rag(scenario_context, user_question=None, k=4):
 
 def evidence_preview(query, k=4):
     """
-    Retrieves evidence without calling the LLM.
-    Useful for checking whether retrieval is sensible.
+    Retrieves evidence without generating an LLM answer.
     """
 
     documents = retrieve_evidence(query=query, k=k)
