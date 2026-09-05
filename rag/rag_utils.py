@@ -36,7 +36,6 @@ def get_chat_model(model_name):
 
 
 def candidate_chat_models():
-    
     configured_model = os.getenv("GEMINI_CHAT_MODEL")
 
     models = []
@@ -53,6 +52,38 @@ def candidate_chat_models():
     )
 
     return list(dict.fromkeys(models))
+
+
+def normalize_llm_text(content):
+    """
+    Converts Gemini/LangChain response content into clean display text.
+
+    Some Gemini responses come back as:
+    [{"type": "text", "text": "...", "extras": {...}}]
+
+    The app should show only the text, not metadata/signatures.
+    """
+
+    if isinstance(content, str):
+        return content
+
+    if isinstance(content, list):
+        text_parts = []
+
+        for item in content:
+            if isinstance(item, dict):
+                if "text" in item:
+                    text_parts.append(str(item["text"]))
+                elif "content" in item:
+                    text_parts.append(str(item["content"]))
+            elif hasattr(item, "text"):
+                text_parts.append(str(item.text))
+            else:
+                text_parts.append(str(item))
+
+        return "\n\n".join(text_parts).strip()
+
+    return str(content)
 
 
 def load_evidence_documents():
@@ -95,10 +126,6 @@ def split_documents(documents):
 
 
 def build_vector_store():
-    """
-    Builds and saves FAISS from rag/evidence_docs/*.md.
-    """
-
     load_dotenv()
 
     documents = load_evidence_documents()
@@ -119,10 +146,6 @@ def build_vector_store():
 
 
 def load_vector_store():
-    """
-    Loads FAISS if present. If absent, builds it from evidence docs.
-    """
-
     load_dotenv()
 
     embeddings = get_embeddings_model()
@@ -166,10 +189,14 @@ def build_scenario_explanation_prompt(scenario_context, evidence_text):
 You are explaining a pharmaceutical oncology demand forecasting scenario.
 
 Use ONLY the structured scenario output and retrieved evidence below.
-Do not invent numerical values.
-Do not recalculate the forecast.
-Do not claim clinical validation.
-If evidence is insufficient, say what is missing.
+
+Rules:
+- Do not invent numerical values.
+- Do not recalculate the forecast.
+- Do not claim clinical validation.
+- Explain access as reachable market/treatment availability, not clinical eligibility.
+- If evidence is insufficient, say what is missing.
+- Keep the tone clear, professional, and client-ready.
 
 STRUCTURED SCENARIO OUTPUT:
 {scenario_context}
@@ -177,22 +204,17 @@ STRUCTURED SCENARIO OUTPUT:
 RETRIEVED EVIDENCE:
 {evidence_text}
 
-Write a clear business explanation with:
+Write the answer in plain language with these sections:
+
 1. What changed versus baseline
-2. Which assumptions drove the change
-3. Which therapies or patient segments are most affected, if available
+2. What assumptions drove the change
+3. Which therapies were most affected
 4. Why this matters for pharmaceutical planning
-5. What a human reviewer should validate before using this in a real client setting
+5. What a human reviewer should validate before real-world use
 """
 
 
 def invoke_gemini_with_fallback(prompt):
-    """
-    Tries available Gemini chat models until one works.
-
-    This handles cases where one model name is unavailable for a specific key.
-    """
-
     errors = []
 
     for model_name in candidate_chat_models():
@@ -201,7 +223,7 @@ def invoke_gemini_with_fallback(prompt):
             response = llm.invoke(prompt)
 
             return {
-                "content": response.content,
+                "content": normalize_llm_text(response.content),
                 "model_used": model_name,
             }
 
@@ -249,10 +271,6 @@ def explain_scenario_with_rag(scenario_context, user_question=None, k=4):
 
 
 def evidence_preview(query, k=4):
-    """
-    Retrieves evidence without generating an LLM answer.
-    """
-
     documents = retrieve_evidence(query=query, k=k)
 
     return format_evidence(documents)
