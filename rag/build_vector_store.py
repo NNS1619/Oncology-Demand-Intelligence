@@ -1,5 +1,6 @@
 # ============================================================
 # Build FAISS Vector Store for RAG Evidence Retrieval
+# Gemini + LangChain + FAISS
 # ============================================================
 
 from pathlib import Path
@@ -7,7 +8,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from langchain_community.document_loaders import DirectoryLoader, TextLoader
 from langchain_community.vectorstores import FAISS
-from langchain_openai import OpenAIEmbeddings
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 
@@ -18,16 +19,6 @@ VECTOR_STORE_DIR = PROJECT_ROOT / "rag" / "vector_store"
 
 
 def load_evidence_documents():
-    """
-    Loads markdown evidence documents.
-
-    Inputs:
-    - rag/evidence_docs/*.md
-
-    Output:
-    - LangChain Document objects with source metadata
-    """
-
     if not EVIDENCE_DOCS_DIR.exists():
         raise FileNotFoundError(
             f"Evidence docs folder not found: {EVIDENCE_DOCS_DIR}"
@@ -52,15 +43,6 @@ def load_evidence_documents():
 
 
 def split_documents(documents):
-    """
-    Splits documents into smaller chunks for retrieval.
-
-    Why chunking matters:
-    - Very large documents retrieve too much irrelevant text.
-    - Very tiny chunks lose context.
-    - This size is a practical starting point for methodology documents.
-    """
-
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=800,
         chunk_overlap=120,
@@ -79,8 +61,8 @@ def build_vector_store():
     """
     Builds and saves the FAISS vector store.
 
-    The OpenAI API key must be available in the environment as:
-    OPENAI_API_KEY
+    Required secret/environment variable:
+    GOOGLE_API_KEY
     """
 
     load_dotenv()
@@ -88,8 +70,8 @@ def build_vector_store():
     documents = load_evidence_documents()
     chunks = split_documents(documents)
 
-    embeddings = OpenAIEmbeddings(
-        model="text-embedding-3-small"
+    embeddings = GoogleGenerativeAIEmbeddings(
+        model="models/gemini-embedding-001"
     )
 
     vector_store = FAISS.from_documents(
