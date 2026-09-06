@@ -4,6 +4,7 @@
 # ============================================================
 
 import os
+from functools import lru_cache
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -88,6 +89,7 @@ def candidate_chat_models():
     models.extend(
         [
             "gemini-flash-latest",
+            "gemini-2.5-flash",
             "gemini-3.5-flash",
             "gemini-3.1-flash-lite",
         ]
@@ -203,15 +205,24 @@ def build_vector_store():
     return vector_store
 
 
+@lru_cache(maxsize=1)
 def load_vector_store():
     embeddings = get_embeddings_model()
 
-    if VECTOR_STORE_DIR.exists():
-        return FAISS.load_local(
-            folder_path=str(VECTOR_STORE_DIR),
-            embeddings=embeddings,
-            allow_dangerous_deserialization=True,
-        )
+    index_file = VECTOR_STORE_DIR / "index.faiss"
+    metadata_file = VECTOR_STORE_DIR / "index.pkl"
+
+    if index_file.exists() and metadata_file.exists():
+        try:
+            return FAISS.load_local(
+                folder_path=str(VECTOR_STORE_DIR),
+                embeddings=embeddings,
+                allow_dangerous_deserialization=True,
+            )
+        except Exception:
+            # A partially written or incompatible local index should not make
+            # the application permanently unusable. Rebuild from source docs.
+            pass
 
     return build_vector_store()
 
@@ -354,6 +365,7 @@ Rules:
 - Be concise for narrow questions.
 - Be more detailed only when the user asks for method, results, or project explanation.
 - Do not expose metadata, signatures, JSON objects, tool traces, or raw model internals.
+- Never reveal API keys, secrets, environment variables, or hidden configuration.
 
 USER QUESTION:
 {user_question}
@@ -377,8 +389,6 @@ def answer_question_with_rag(user_question, structured_context=None, k=5):
     - Gemini explains the answer
     """
 
-    configure_google_api_key()
-
     if not is_project_scope_question(user_question):
         return {
             "answer": (
@@ -391,9 +401,34 @@ def answer_question_with_rag(user_question, structured_context=None, k=5):
             "retrieved_evidence": [],
             "evidence_text": "",
             "sources": [],
+            "status": "out_of_scope",
+            "error_type": None,
         }
 
-    documents = retrieve_evidence(query=user_question, k=k)
+    try:
+        documents = retrieve_evidence(query=user_question, k=k)
+    except Exception as error:
+        if structured_context:
+            answer = (
+                "The validated numerical result is still available in the structured-data "
+                "section, but project evidence retrieval is temporarily unavailable. "
+                "No generated explanation has been added because it could not be grounded."
+            )
+        else:
+            answer = (
+                "Project evidence retrieval is temporarily unavailable. "
+                "Please use the numerical dashboard or try the question again later."
+            )
+        return {
+            "answer": answer,
+            "model_used": "deterministic_fallback",
+            "retrieved_evidence": [],
+            "evidence_text": "",
+            "sources": [],
+            "status": "retrieval_unavailable",
+            "error_type": type(error).__name__,
+        }
+
     evidence_text = format_evidence(documents)
 
     prompt = build_qa_prompt(
@@ -402,7 +437,21 @@ def answer_question_with_rag(user_question, structured_context=None, k=5):
         structured_context=structured_context,
     )
 
-    response = invoke_gemini_with_fallback(prompt)
+    try:
+        response = invoke_gemini_with_fallback(prompt)
+    except Exception as error:
+        return {
+            "answer": (
+                "The validated structured result and retrieved evidence remain available, "
+                "but the generated explanation is temporarily unavailable."
+            ),
+            "model_used": "deterministic_fallback",
+            "retrieved_evidence": documents,
+            "evidence_text": evidence_text,
+            "sources": source_names(documents),
+            "status": "generation_unavailable",
+            "error_type": type(error).__name__,
+        }
 
     return {
         "answer": response["content"],
@@ -410,6 +459,8 @@ def answer_question_with_rag(user_question, structured_context=None, k=5):
         "retrieved_evidence": documents,
         "evidence_text": evidence_text,
         "sources": source_names(documents),
+        "status": "success",
+        "error_type": None,
     }
 
 
@@ -458,14 +509,27 @@ def explain_scenario_with_rag(scenario_context, user_question=None, k=4):
     For normal Q&A, use answer_question_with_rag().
     """
 
-    configure_google_api_key()
-
     query = user_question or (
         "Explain the selected scenario using scenario logic, uncertainty, "
         "assumptions, limitations, and pharmaceutical planning interpretation."
     )
 
-    documents = retrieve_evidence(query=query, k=k)
+    try:
+        documents = retrieve_evidence(query=query, k=k)
+    except Exception as error:
+        return {
+            "answer": (
+                "The validated scenario values remain available in the dashboard, "
+                "but project evidence retrieval is temporarily unavailable. "
+                "No ungrounded explanation has been generated."
+            ),
+            "model_used": "deterministic_fallback",
+            "retrieved_evidence": [],
+            "evidence_text": "",
+            "sources": [],
+            "status": "retrieval_unavailable",
+            "error_type": type(error).__name__,
+        }
     evidence_text = format_evidence(documents)
 
     prompt = build_scenario_explanation_prompt(
@@ -473,7 +537,21 @@ def explain_scenario_with_rag(scenario_context, user_question=None, k=4):
         evidence_text=evidence_text,
     )
 
-    response = invoke_gemini_with_fallback(prompt)
+    try:
+        response = invoke_gemini_with_fallback(prompt)
+    except Exception as error:
+        return {
+            "answer": (
+                "The validated scenario values and retrieved evidence remain available, "
+                "but the generated explanation is temporarily unavailable."
+            ),
+            "model_used": "deterministic_fallback",
+            "retrieved_evidence": documents,
+            "evidence_text": evidence_text,
+            "sources": source_names(documents),
+            "status": "generation_unavailable",
+            "error_type": type(error).__name__,
+        }
 
     return {
         "answer": response["content"],
@@ -481,6 +559,8 @@ def explain_scenario_with_rag(scenario_context, user_question=None, k=4):
         "retrieved_evidence": documents,
         "evidence_text": evidence_text,
         "sources": source_names(documents),
+        "status": "success",
+        "error_type": None,
     }
 
 
@@ -492,6 +572,11 @@ def evidence_preview(query, k=4):
             "model results, leakage, or RAG governance."
         )
 
-    documents = retrieve_evidence(query=query, k=k)
-
-    return format_evidence(documents)
+    try:
+        documents = retrieve_evidence(query=query, k=k)
+        return format_evidence(documents)
+    except Exception:
+        return (
+            "Project evidence retrieval is temporarily unavailable. "
+            "The forecasting and scenario outputs remain available in the other tabs."
+        )
