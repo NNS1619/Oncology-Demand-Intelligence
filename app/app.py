@@ -1,6 +1,6 @@
 # ============================================================
 # Patient-Informed Oncology Demand Forecasting App
-# Streamlit + Scenario Intelligence + Project RAG
+# Streamlit + Scenario Intelligence + RAG
 # ============================================================
 
 import sys
