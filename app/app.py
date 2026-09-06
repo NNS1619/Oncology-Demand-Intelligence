@@ -3,7 +3,6 @@
 # Streamlit + Scenario Intelligence + Project RAG
 # ============================================================
 
-import re
 import sys
 from pathlib import Path
 
@@ -31,11 +30,36 @@ DATA_SEARCH_DIRS = [
 ]
 
 try:
+    from rag.structured_router import (
+        build_structured_context_for_question as route_structured_context,
+    )
+except Exception:
+    route_structured_context = None
+
+try:
     from rag.rag_utils import answer_question_with_rag, evidence_preview
     RAG_AVAILABLE = True
 except Exception as import_error:
     RAG_AVAILABLE = False
     RAG_IMPORT_ERROR = import_error
+
+    def answer_question_with_rag(*args, **kwargs):
+        return {
+            "answer": (
+                "The AI explanation service is temporarily unavailable. "
+                "The validated forecast and scenario dashboards remain available."
+            ),
+            "model_used": "safe_fallback",
+            "sources": [],
+            "status": "rag_import_unavailable",
+            "error_type": type(RAG_IMPORT_ERROR).__name__,
+        }
+
+    def evidence_preview(*args, **kwargs):
+        return (
+            "Evidence retrieval is temporarily unavailable. "
+            "The numerical dashboards are unaffected."
+        )
 
 
 # ------------------------------------------------------------
@@ -129,6 +153,22 @@ def load_project_outputs():
         "regime_positive_fva.csv"
     )
 
+    data["forecast_metrics_by_therapy_horizon"] = read_csv_optional(
+        "forecast_metrics_by_therapy_horizon.csv"
+    )
+
+    data["forecast_macro_metrics_by_horizon"] = read_csv_optional(
+        "forecast_macro_metrics_by_horizon.csv"
+    )
+
+    data["forecast_model_bootstrap_intervals"] = read_csv_optional(
+        "forecast_model_bootstrap_intervals.csv"
+    )
+
+    data["rag_evaluation_summary"] = read_csv_optional(
+        "rag_evaluation_summary.csv"
+    )
+
     data["claim_discipline"] = read_csv_optional(
         "claim_discipline.csv"
     )
@@ -161,6 +201,10 @@ therapy_scenario_summary = outputs["therapy_scenario_summary"]
 scenario_row_outputs = outputs["scenario_row_outputs"]
 scenario_catalog = outputs["scenario_catalog"]
 regime_positive_fva = outputs["regime_positive_fva"]
+forecast_metrics_by_therapy_horizon = outputs["forecast_metrics_by_therapy_horizon"]
+forecast_macro_metrics_by_horizon = outputs["forecast_macro_metrics_by_horizon"]
+forecast_model_bootstrap_intervals = outputs["forecast_model_bootstrap_intervals"]
+rag_evaluation_summary = outputs["rag_evaluation_summary"]
 claim_discipline = outputs["claim_discipline"]
 senior_review_gate = outputs["senior_review_gate"]
 notebook_3_conclusion = outputs["notebook_3_conclusion"]
@@ -192,6 +236,21 @@ def format_percent_column(df, columns):
             out[col] = out[col].map(lambda x: f"{x:.1%}" if pd.notna(x) else "")
 
     return out
+
+
+def evaluation_metric(summary_df, metric_name):
+    if summary_df is None or summary_df.empty:
+        return None
+
+    match = summary_df.loc[summary_df["metric"] == metric_name, "value"]
+    if match.empty or pd.isna(match.iloc[0]):
+        return None
+
+    return float(match.iloc[0])
+
+
+def fmt_evaluation_rate(value):
+    return "Not run" if value is None else f"{value:.0%}"
 
 
 SCENARIO_CLIENT_LABELS = {
@@ -252,474 +311,6 @@ scenario_summary_display = add_client_scenario_labels(
 therapy_scenario_display = add_client_scenario_labels(
     therapy_scenario_summary
 )
-
-
-# ------------------------------------------------------------
-# Structured Analytics Router for RAG
-# ------------------------------------------------------------
-
-THERAPY_NAMES = {
-    "therapy a": "Therapy A",
-    "therapy b": "Therapy B",
-    "therapy c": "Therapy C",
-    "therapy d": "Therapy D",
-}
-
-SCENARIO_NAMES = {
-    "base": "Base case",
-    "base case": "Base case",
-    "access": "Access downside",
-    "access downside": "Access downside",
-    "competitor": "Earlier strong competitor pressure",
-    "competition": "Earlier strong competitor pressure",
-    "earlier strong competitor pressure": "Earlier strong competitor pressure",
-    "epidemiology": "Epidemiology upside",
-    "epidemiology upside": "Epidemiology upside",
-    "persistence": "Persistence downside",
-    "persistence downside": "Persistence downside",
-    "supply": "Therapy D East supply constraint",
-    "supply constraint": "Therapy D East supply constraint",
-    "therapy d east supply constraint": "Therapy D East supply constraint",
-    "combined": "Combined downside",
-    "combined downside": "Combined downside",
-}
-
-
-def detect_therapy(question):
-    question_lower = question.lower()
-
-    for key, therapy in THERAPY_NAMES.items():
-        if key in question_lower:
-            return therapy
-
-    return None
-
-
-def detect_scenario(question):
-    question_lower = question.lower()
-
-    for key in sorted(SCENARIO_NAMES.keys(), key=len, reverse=True):
-        if key in question_lower:
-            return SCENARIO_NAMES[key]
-
-    return None
-
-
-def detect_horizon(question):
-    question_lower = question.lower()
-
-    patterns = [
-        r"(\d+)\s*month",
-        r"(\d+)\s*months",
-        r"horizon\s*(\d+)",
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, question_lower)
-
-        if match:
-            return int(match.group(1))
-
-    return None
-
-
-def question_mentions_structured_result(question):
-    question_lower = question.lower()
-
-    structured_terms = [
-        "worst",
-        "best",
-        "biggest",
-        "largest",
-        "smallest",
-        "highest",
-        "lowest",
-        "most affected",
-        "least affected",
-        "decline",
-        "drop",
-        "increase",
-        "improve",
-        "improvement",
-        "added value",
-        "add value",
-        "fva",
-        "wape",
-        "mae",
-        "bias",
-        "which therapy",
-        "which scenario",
-        "which model",
-        "when will",
-        "when does",
-        "p10",
-        "p50",
-        "p90",
-        "uncertainty",
-    ]
-
-    return any(term in question_lower for term in structured_terms)
-
-
-def build_therapy_scenario_context(question, therapy_scenario_summary):
-    question_lower = question.lower()
-    therapy = detect_therapy(question)
-    scenario = detect_scenario(question)
-
-    df = therapy_scenario_summary.copy()
-
-    if therapy:
-        df = df[df["therapy"] == therapy]
-
-    if scenario:
-        df = df[df["scenario_name"] == scenario]
-
-    if df.empty:
-        return None
-
-    if any(
-        term in question_lower
-        for term in [
-            "worst",
-            "biggest decline",
-            "largest decline",
-            "drop",
-            "most affected",
-        ]
-    ):
-        selected = df.sort_values(
-            "absolute_change_units",
-            ascending=True,
-        ).iloc[0]
-
-        result_type = "largest negative change"
-
-    elif any(
-        term in question_lower
-        for term in [
-            "best",
-            "biggest increase",
-            "largest increase",
-            "benefit",
-            "upside",
-        ]
-    ):
-        selected = df.sort_values(
-            "absolute_change_units",
-            ascending=False,
-        ).iloc[0]
-
-        result_type = "largest positive change"
-
-    else:
-        df["_abs_change"] = df["absolute_change_units"].abs()
-
-        selected = df.sort_values(
-            "_abs_change",
-            ascending=False,
-        ).iloc[0]
-
-        result_type = "largest absolute change"
-
-    context = f"""
-STRUCTURED DATA RESULT:
-Question type: Therapy-level scenario lookup
-Result type: {result_type}
-
-Therapy: {selected["therapy"]}
-Scenario: {selected["scenario_name"]}
-Client scenario label: {SCENARIO_CLIENT_LABELS.get(selected["scenario_name"], selected["scenario_name"])}
-
-Baseline forecast units: {fmt_units(selected["baseline_forecast_units"])}
-Scenario forecast units: {fmt_units(selected["scenario_forecast_units"])}
-Absolute change units: {fmt_units(selected["absolute_change_units"])}
-Percent change: {fmt_pct(selected["percent_change"])}
-
-Interpretation instruction:
-Explain that these values come from the saved therapy-level scenario output table.
-Do not recalculate them.
-Explain the commercial meaning in simple pharmaceutical planning language.
-If the scenario is a uniform access downside, explain that similar percentage changes are expected by design and absolute unit impact is the more useful comparison.
-"""
-
-    return context
-
-
-def build_overall_scenario_context(question, scenario_summary_with_uncertainty):
-    question_lower = question.lower()
-    scenario = detect_scenario(question)
-
-    df = scenario_summary_with_uncertainty.copy()
-
-    if scenario:
-        df = df[df["scenario_name"] == scenario]
-
-    if df.empty:
-        return None
-
-    if any(
-        term in question_lower
-        for term in [
-            "worst",
-            "biggest decline",
-            "largest decline",
-            "downside",
-            "drop",
-        ]
-    ):
-        selected = df.sort_values(
-            "absolute_change_units",
-            ascending=True,
-        ).iloc[0]
-
-        result_type = "largest overall downside"
-
-    elif any(
-        term in question_lower
-        for term in [
-            "best",
-            "biggest increase",
-            "largest increase",
-            "upside",
-        ]
-    ):
-        selected = df.sort_values(
-            "absolute_change_units",
-            ascending=False,
-        ).iloc[0]
-
-        result_type = "largest overall upside"
-
-    else:
-        selected = df.iloc[0]
-        result_type = "selected scenario"
-
-    context = f"""
-STRUCTURED DATA RESULT:
-Question type: Overall scenario lookup
-Result type: {result_type}
-
-Scenario: {selected["scenario_name"]}
-Client scenario label: {SCENARIO_CLIENT_LABELS.get(selected["scenario_name"], selected["scenario_name"])}
-Description: {selected.get("description", "not available")}
-
-Baseline forecast units: {fmt_units(selected["baseline_forecast_units"])}
-Scenario forecast units: {fmt_units(selected["scenario_forecast_units"])}
-Absolute change units: {fmt_units(selected["absolute_change_units"])}
-Percent change: {fmt_pct(selected["percent_change"])}
-
-Conservative planning case, P10: {fmt_units(selected.get("p10"))}
-Expected planning case, P50: {fmt_units(selected.get("p50"))}
-Upside planning case, P90: {fmt_units(selected.get("p90"))}
-
-Interpretation instruction:
-Explain P10/P50/P90 in client-friendly language.
-Clarify that these are simulated planning ranges from the scenario uncertainty engine, not clinical confidence intervals.
-Do not recalculate the values.
-"""
-
-    return context
-
-
-def build_model_performance_context(question, compact_metrics):
-    question_lower = question.lower()
-    horizon = detect_horizon(question)
-
-    df = compact_metrics.copy()
-
-    if horizon:
-        df = df[df["horizon_months"] == horizon]
-
-    if df.empty:
-        return None
-
-    if any(
-        term in question_lower
-        for term in ["worst", "highest wape", "least accurate"]
-    ):
-        selected = df.sort_values("WAPE", ascending=False).iloc[0]
-        result_type = "worst model by WAPE"
-
-    else:
-        selected = df.sort_values("WAPE", ascending=True).iloc[0]
-        result_type = "best model by WAPE"
-
-    context = f"""
-STRUCTURED DATA RESULT:
-Question type: Model-performance lookup
-Result type: {result_type}
-
-Forecast horizon: {int(selected["horizon_months"])} months
-Model: {selected["model"]}
-
-WAPE: {fmt_pct(selected["WAPE"])}
-MAE: {fmt_units(selected["MAE"])}
-Bias: {fmt_pct(selected["Bias"])}
-
-Interpretation instruction:
-Explain that lower WAPE is better.
-Explain why recent observed demand can be difficult to beat in a persistent oncology demand setting.
-Do not claim that complex ML wins overall unless the structured result supports it.
-"""
-
-    return context
-
-
-def build_regime_value_context(question, regime_positive_fva):
-    question_lower = question.lower()
-
-    if regime_positive_fva is None or regime_positive_fva.empty:
-        return None
-
-    model_terms = {
-        "historical": "historical_xgboost",
-        "patient driver": "patient_driver",
-        "patient": "patient_driver",
-        "hybrid": "hybrid_xgboost",
-    }
-
-    selected_model = None
-
-    for term, model in model_terms.items():
-        if term in question_lower:
-            selected_model = model
-            break
-
-    if selected_model is None:
-        return None
-
-    df = regime_positive_fva.copy()
-
-    fva_col = f"{selected_model}_fva_vs_naive"
-    wape_col = f"{selected_model}_wape"
-
-    if fva_col not in df.columns:
-        return None
-
-    df = df[df[fva_col] > 0].copy()
-
-    if df.empty:
-        return f"""
-STRUCTURED DATA RESULT:
-Question type: Regime Forecast Value Add lookup
-
-Model checked: {selected_model}
-Result: No positive Forecast Value Add windows were found for this model in the saved regime-positive table.
-
-Interpretation instruction:
-Explain that the selected model did not beat naive in the stored positive-FVA regime windows.
-"""
-
-    df = df.sort_values(fva_col, ascending=False)
-
-    rows = []
-
-    for _, row in df.head(5).iterrows():
-        rows.append(
-            f"- Horizon {int(row['horizon_months'])} months, "
-            f"regime {row['target_market_regime']}: "
-            f"{selected_model} WAPE {fmt_pct(row[wape_col])}, "
-            f"naive WAPE {fmt_pct(row['naive_wape'])}, "
-            f"FVA vs naive {fmt_pct(row[fva_col])}, "
-            f"n forecasts {int(row['n_forecasts'])}"
-        )
-
-    context = f"""
-STRUCTURED DATA RESULT:
-Question type: Regime Forecast Value Add lookup
-
-Model checked: {selected_model}
-Positive value-add windows:
-{chr(10).join(rows)}
-
-Interpretation instruction:
-Explain that patient/market or hybrid methods did not win overall, but did add value in selected event regimes.
-Mention sample-size caution if n_forecasts is small.
-"""
-
-    return context
-
-
-def build_structured_context_for_question(
-    question,
-    scenario_summary_with_uncertainty,
-    therapy_scenario_summary,
-    compact_metrics,
-    regime_positive_fva=None,
-):
-    question_lower = question.lower()
-
-    if not question_mentions_structured_result(question):
-        return None
-
-    if detect_therapy(question) is not None:
-        context = build_therapy_scenario_context(
-            question=question,
-            therapy_scenario_summary=therapy_scenario_summary,
-        )
-
-        if context:
-            return context
-
-    if any(
-        term in question_lower
-        for term in [
-            "model",
-            "wape",
-            "mae",
-            "bias",
-            "naive",
-            "xgboost",
-            "hybrid",
-        ]
-    ):
-        context = build_model_performance_context(
-            question=question,
-            compact_metrics=compact_metrics,
-        )
-
-        if context:
-            return context
-
-    if any(
-        term in question_lower
-        for term in [
-            "fva",
-            "added value",
-            "add value",
-            "regime",
-            "where does",
-        ]
-    ):
-        context = build_regime_value_context(
-            question=question,
-            regime_positive_fva=regime_positive_fva,
-        )
-
-        if context:
-            return context
-
-    if any(
-        term in question_lower
-        for term in [
-            "scenario",
-            "p10",
-            "p50",
-            "p90",
-            "uncertainty",
-            "downside",
-            "upside",
-        ]
-    ):
-        context = build_overall_scenario_context(
-            question=question,
-            scenario_summary_with_uncertainty=scenario_summary_with_uncertainty,
-        )
-
-        if context:
-            return context
-
-    return None
 
 
 # ------------------------------------------------------------
@@ -843,6 +434,57 @@ with tab_performance:
             "inside specific market regimes even when naive wins overall."
         )
         st.dataframe(regime_positive_fva, use_container_width=True)
+
+    if forecast_macro_metrics_by_horizon is not None:
+        with st.expander("Therapy-balanced performance view"):
+            st.caption(
+                "Portfolio WAPE weights high-volume therapies more heavily. Macro metrics "
+                "average the four therapies equally, so they reveal whether the conclusion "
+                "changes when every therapy receives the same weight."
+            )
+            macro_display = forecast_macro_metrics_by_horizon.copy()
+            macro_display = format_percent_column(
+                macro_display,
+                ["macro_WAPE", "macro_Bias"],
+            )
+            st.dataframe(macro_display, use_container_width=True)
+
+    if forecast_metrics_by_therapy_horizon is not None:
+        with st.expander("Therapy-level forecast metrics"):
+            therapy_metric_display = format_percent_column(
+                forecast_metrics_by_therapy_horizon,
+                ["WAPE", "Bias"],
+            )
+            st.dataframe(therapy_metric_display, use_container_width=True)
+
+    if forecast_model_bootstrap_intervals is not None:
+        with st.expander("Forecast-origin bootstrap evidence"):
+            st.caption(
+                "Each bootstrap sample resamples complete forecast origins, preserving the "
+                "16 therapy-region forecasts within an origin. The interval tests whether a "
+                "model's portfolio WAPE improvement over naive is stable across origins."
+            )
+            bootstrap_display = forecast_model_bootstrap_intervals[
+                [
+                    "horizon_months",
+                    "model",
+                    "n_origins",
+                    "FVA_vs_naive",
+                    "FVA_ci_lower",
+                    "FVA_ci_upper",
+                    "probability_model_beats_naive",
+                ]
+            ].copy()
+            bootstrap_display = format_percent_column(
+                bootstrap_display,
+                [
+                    "FVA_vs_naive",
+                    "FVA_ci_lower",
+                    "FVA_ci_upper",
+                    "probability_model_beats_naive",
+                ],
+            )
+            st.dataframe(bootstrap_display, use_container_width=True)
 
 
 # ------------------------------------------------------------
@@ -999,10 +641,64 @@ with tab_rag:
         "come from saved output tables; explanation comes from retrieved project evidence."
     )
 
+    st.subheader("AI Trust and Evaluation")
+    if rag_evaluation_summary is None:
+        st.info(
+            "No saved RAG evaluation summary is available yet. Run "
+            "`python rag/evaluate_rag.py --mode full` and commit the generated summary."
+        )
+    else:
+        trust_cols = st.columns(5)
+        trust_cols[0].metric(
+            "Questions Tested",
+            int(evaluation_metric(rag_evaluation_summary, "questions_evaluated") or 0),
+        )
+        trust_cols[1].metric(
+            "Router Accuracy",
+            fmt_evaluation_rate(
+                evaluation_metric(rag_evaluation_summary, "router_intent_accuracy")
+            ),
+        )
+        trust_cols[2].metric(
+            "Retrieval Recall@5",
+            fmt_evaluation_rate(
+                evaluation_metric(rag_evaluation_summary, "source_recall_at_k")
+            ),
+        )
+        trust_cols[3].metric(
+            "Numerical Fidelity",
+            fmt_evaluation_rate(
+                evaluation_metric(rag_evaluation_summary, "numerical_exactness")
+            ),
+        )
+        trust_cols[4].metric(
+            "Boundary Accuracy",
+            fmt_evaluation_rate(
+                evaluation_metric(rag_evaluation_summary, "refusal_accuracy")
+            ),
+        )
+
+        evaluation_mode = str(rag_evaluation_summary["evaluation_mode"].iloc[0])
+        evaluation_split = (
+            str(rag_evaluation_summary["evaluation_split"].iloc[0])
+            if "evaluation_split" in rag_evaluation_summary.columns
+            else "all"
+        )
+        generated_at = str(rag_evaluation_summary["generated_at_utc"].iloc[0])
+        st.caption(
+            f"Saved evaluation mode: {evaluation_mode}; split: {evaluation_split}. "
+            f"Generated: {generated_at}. "
+            "'Not run' means the API-dependent layer has not yet been measured; it is not a zero score."
+        )
+
+        with st.expander("Evaluation details and acceptance targets"):
+            st.dataframe(rag_evaluation_summary, use_container_width=True)
+
     if not RAG_AVAILABLE:
-        st.error("RAG utilities could not be imported.")
-        st.exception(RAG_IMPORT_ERROR)
-        st.stop()
+        st.warning(
+            "The AI explanation service is temporarily unavailable. "
+            "The forecast and scenario tabs remain fully usable."
+        )
 
     user_question = st.text_area(
         "Project question",
@@ -1052,21 +748,27 @@ with tab_rag:
             st.warning("Please enter a project question.")
 
         else:
-            structured_context = build_structured_context_for_question(
-                question=user_question,
-                scenario_summary_with_uncertainty=scenario_summary_with_uncertainty,
-                therapy_scenario_summary=therapy_scenario_summary,
-                compact_metrics=compact_metrics,
-                regime_positive_fva=regime_positive_fva,
-            )
+            if route_structured_context is not None:
+                structured_context = route_structured_context(
+                    question=user_question,
+                    scenario_summary_with_uncertainty=scenario_summary_with_uncertainty,
+                    therapy_scenario_summary=therapy_scenario_summary,
+                    compact_metrics=compact_metrics,
+                    regime_positive_fva=regime_positive_fva,
+                )
+            else:
+                structured_context = None
 
             if include_selected_scenario and structured_context is None:
                 scenario_question = f"Explain scenario {rag_selected_scenario}"
-
-                structured_context = build_overall_scenario_context(
-                    question=scenario_question,
-                    scenario_summary_with_uncertainty=scenario_summary_with_uncertainty,
-                )
+                if route_structured_context is not None:
+                    structured_context = route_structured_context(
+                        question=scenario_question,
+                        scenario_summary_with_uncertainty=scenario_summary_with_uncertainty,
+                        therapy_scenario_summary=therapy_scenario_summary,
+                        compact_metrics=compact_metrics,
+                        regime_positive_fva=regime_positive_fva,
+                    )
 
             with st.spinner("Retrieving evidence and generating grounded answer..."):
                 try:
@@ -1077,7 +779,14 @@ with tab_rag:
                     )
 
                     st.subheader("Grounded Answer")
-                    st.markdown(result["answer"])
+                    if result.get("status") in {
+                        "retrieval_unavailable",
+                        "generation_unavailable",
+                        "rag_import_unavailable",
+                    }:
+                        st.warning(result["answer"])
+                    else:
+                        st.markdown(result["answer"])
 
                     if result.get("model_used"):
                         st.caption(f"Model used: {result['model_used']}")
@@ -1092,12 +801,11 @@ with tab_rag:
                         with st.expander("Structured data used for this answer"):
                             st.text(structured_context)
 
-                except Exception as error:
+                except Exception:
                     st.error(
-                        "The RAG answer could not be generated. "
-                        "Check Streamlit secrets, Gemini model access, and vector store setup."
+                        "The generated explanation is temporarily unavailable. "
+                        "Validated numerical outputs remain available in the dashboard."
                     )
-                    st.exception(error)
 
                     if structured_context:
                         st.subheader("Structured Result Available")
