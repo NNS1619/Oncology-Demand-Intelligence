@@ -1,0 +1,17 @@
+metric,value,target,status,evaluation_mode,generated_at_utc
+questions_evaluated,40.0,,INFORMATIONAL,static,2026-09-06T10:28:15+00:00
+critical_questions,26.0,,INFORMATIONAL,static,2026-09-06T10:28:15+00:00
+router_intent_accuracy,1.0,0.95,PASS,static,2026-09-06T10:28:15+00:00
+router_dimension_accuracy,1.0,0.95,PASS,static,2026-09-06T10:28:15+00:00
+source_recall_at_k,,0.85,NOT RUN,static,2026-09-06T10:28:15+00:00
+source_mrr,,0.65,NOT RUN,static,2026-09-06T10:28:15+00:00
+required_term_coverage,,0.8,NOT RUN,static,2026-09-06T10:28:15+00:00
+forbidden_term_pass_rate,,1.0,NOT RUN,static,2026-09-06T10:28:15+00:00
+numerical_exactness,,0.95,NOT RUN,static,2026-09-06T10:28:15+00:00
+refusal_accuracy,,1.0,NOT RUN,static,2026-09-06T10:28:15+00:00
+response_success_rate,,0.95,NOT RUN,static,2026-09-06T10:28:15+00:00
+mean_latency_seconds,0.00022250000000000004,,INFORMATIONAL,static,2026-09-06T10:28:15+00:00
+evidence_document_count,7.0,,INFORMATIONAL,static,2026-09-06T10:28:15+00:00
+evidence_nonempty_rate,1.0,1.0,PASS,static,2026-09-06T10:28:15+00:00
+evidence_unique_rate,1.0,1.0,PASS,static,2026-09-06T10:28:15+00:00
+evidence_secret_scan_pass,1.0,1.0,PASS,static,2026-09-06T10:28:15+00:00
