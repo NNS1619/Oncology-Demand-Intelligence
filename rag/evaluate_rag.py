@@ -1,14 +1,4 @@
 """Evaluate the oncology POC's analytics router, retriever, and grounded Q&A.
-
-Usage
------
-python rag/evaluate_rag.py --mode static
-python rag/evaluate_rag.py --mode retrieval
-python rag/evaluate_rag.py --mode full
-
-Static mode never calls Gemini. Retrieval mode calls the embedding service but
-not the chat model. Full mode evaluates the complete RAG path. Results are
-written to data/outputs as both question-level detail and a compact summary.
 """
 
 from __future__ import annotations
