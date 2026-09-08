@@ -3,7 +3,10 @@
 # Gemini + LangChain + FAISS
 # ============================================================
 
+import hashlib
+import json
 import os
+import re
 from functools import lru_cache
 from pathlib import Path
 
@@ -21,6 +24,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 EVIDENCE_DOCS_DIR = PROJECT_ROOT / "rag" / "evidence_docs"
 VECTOR_STORE_DIR = PROJECT_ROOT / "rag" / "vector_store"
+VECTOR_STORE_MANIFEST = VECTOR_STORE_DIR / "manifest.json"
 
 
 # ------------------------------------------------------------
@@ -71,6 +75,8 @@ def get_chat_model(model_name):
     return ChatGoogleGenerativeAI(
         model=model_name,
         temperature=0,
+        max_retries=1,
+        timeout=45,
     )
 
 
@@ -138,6 +144,21 @@ def invoke_gemini_with_fallback(prompt):
         except Exception as error:
             errors.append(f"{model_name}: {type(error).__name__}")
 
+            # Trying several model names does not solve quota exhaustion and can
+            # turn one controlled failure into a multi-minute wait. Only move to
+            # another candidate when the configured model name itself is invalid
+            # or unavailable.
+            error_name = type(error).__name__.lower()
+            model_configuration_error = any(
+                marker in error_name
+                for marker in ("modelnotfound", "notfound", "invalidargument")
+            )
+            if not model_configuration_error:
+                raise RuntimeError(
+                    "Gemini generation is temporarily unavailable. "
+                    f"Provider error: {type(error).__name__}."
+                ) from error
+
     raise RuntimeError(
         "No Gemini chat model worked. Tried: "
         + "; ".join(errors)
@@ -173,6 +194,15 @@ def load_evidence_documents():
     return documents
 
 
+def evidence_corpus_fingerprint():
+    """Hash filenames and content so stale FAISS indexes are rebuilt."""
+    digest = hashlib.sha256()
+    for path in sorted(EVIDENCE_DOCS_DIR.glob("*.md")):
+        digest.update(path.name.encode("utf-8"))
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
 def split_documents(documents):
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=800,
@@ -188,6 +218,12 @@ def split_documents(documents):
     return chunks
 
 
+@lru_cache(maxsize=1)
+def cached_evidence_chunks():
+    """Return the governed corpus chunks for lightweight lexical reranking."""
+    return split_documents(load_evidence_documents())
+
+
 def build_vector_store():
     documents = load_evidence_documents()
     chunks = split_documents(documents)
@@ -201,6 +237,13 @@ def build_vector_store():
 
     VECTOR_STORE_DIR.mkdir(parents=True, exist_ok=True)
     vector_store.save_local(str(VECTOR_STORE_DIR))
+    VECTOR_STORE_MANIFEST.write_text(
+        json.dumps(
+            {"corpus_fingerprint": evidence_corpus_fingerprint()},
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
 
     return vector_store
 
@@ -212,7 +255,17 @@ def load_vector_store():
     index_file = VECTOR_STORE_DIR / "index.faiss"
     metadata_file = VECTOR_STORE_DIR / "index.pkl"
 
-    if index_file.exists() and metadata_file.exists():
+    manifest_matches = False
+    if VECTOR_STORE_MANIFEST.exists():
+        try:
+            manifest = json.loads(VECTOR_STORE_MANIFEST.read_text(encoding="utf-8"))
+            manifest_matches = (
+                manifest.get("corpus_fingerprint") == evidence_corpus_fingerprint()
+            )
+        except Exception:
+            manifest_matches = False
+
+    if index_file.exists() and metadata_file.exists() and manifest_matches:
         try:
             return FAISS.load_local(
                 folder_path=str(VECTOR_STORE_DIR),
@@ -228,13 +281,74 @@ def load_vector_store():
 
 
 def retrieve_evidence(query, k=4):
-    vector_store = load_vector_store()
+    """Hybrid retrieval: FAISS semantics plus lexical reciprocal-rank fusion.
 
-    retriever = vector_store.as_retriever(
-        search_kwargs={"k": k}
+    FAISS remains the semantic retriever. The lexical component protects exact
+    project terminology such as "Forecast Value Add" from being displaced by a
+    semantically broad chunk in this small technical corpus.
+    """
+    vector_store = load_vector_store()
+    semantic_documents = vector_store.similarity_search(
+        query,
+        k=max(k * 3, 12),
     )
 
-    return retriever.invoke(query)
+    stop_words = {
+        "a", "an", "and", "are", "as", "at", "be", "by", "do", "does",
+        "for", "from", "how", "in", "is", "it", "of", "on", "or", "the",
+        "this", "to", "what", "when", "where", "which", "why", "with",
+    }
+
+    def tokens(text):
+        normalized = re.sub(r"[^a-z0-9]+", " ", text.lower())
+        return {
+            token for token in normalized.split()
+            if token not in stop_words and len(token) > 1
+        }
+
+    query_tokens = tokens(query)
+
+    def lexical_score(document):
+        document_tokens = tokens(document.page_content)
+        if not query_tokens:
+            return 0.0
+        return len(query_tokens.intersection(document_tokens)) / len(query_tokens)
+
+    lexical_documents = sorted(
+        cached_evidence_chunks(),
+        key=lexical_score,
+        reverse=True,
+    )
+    lexical_documents = [
+        document for document in lexical_documents
+        if lexical_score(document) > 0
+    ][:max(k * 3, 12)]
+
+    def document_key(document):
+        return (
+            document.metadata.get("source", "unknown"),
+            document.page_content,
+        )
+
+    combined_scores = {}
+    combined_documents = {}
+
+    for rank, document in enumerate(semantic_documents, start=1):
+        key = document_key(document)
+        combined_documents[key] = document
+        combined_scores[key] = combined_scores.get(key, 0.0) + 1.0 / rank
+
+    for rank, document in enumerate(lexical_documents, start=1):
+        key = document_key(document)
+        combined_documents[key] = document
+        combined_scores[key] = combined_scores.get(key, 0.0) + 1.25 / rank
+
+    ranked_keys = sorted(
+        combined_scores,
+        key=combined_scores.get,
+        reverse=True,
+    )
+    return [combined_documents[key] for key in ranked_keys[:k]]
 
 
 def source_names(documents):
@@ -293,18 +407,35 @@ def is_project_scope_question(question):
         "supply",
         "scenario",
         "uncertainty",
-        "p10", "p50",
-        "p90", "planning case",
+        "p10",
+        "p50",
+        "p90",
+        "planning case",
         "monte carlo",
-        "wape","mae",
-        "bias", "fva", "xgboost", "naive", "hybrid", "assumption",
-        "evidence", "rag","time series","time-series",
-        "temporal validation","random split","rolling origin",
-        "rolling-origin","backtest","backtesting","training set","test set", "llm",
+        "wape",
+        "mae",
+        "bias",
+        "fva",
+        "xgboost",
+        "naive",
+        "hybrid",
+        "assumption",
+        "evidence",
+        "rag",
+        "llm",
         "gemini",
         "limitation",
         "validation",
         "leakage",
+        "time series",
+        "time-series",
+        "temporal split",
+        "random split",
+        "rolling origin",
+        "rolling-origin",
+        "backtest",
+        "training set",
+        "test set",
         "forecast information set",
         "sql",
         "python",
@@ -352,7 +483,8 @@ Rules:
 - Say this is a synthetic case study when relevant.
 - Use "aggregated patient-flow signals" rather than "patient-level data."
 - Explain technical terms in business language.
-- For P10, P50, and P90, explain them as conservative, expected, and upside planning cases.
+- For P10, P50, and P90, explain them as conservative, median central, and upside planning cases.
+- Do not call P50 the "most likely" outcome; a median is not necessarily the mode.
 - If the evidence is not enough, say what is missing.
 - Be concise for narrow questions.
 - Be more detailed only when the user asks for method, results, or project explanation.
@@ -474,7 +606,8 @@ Rules:
 - Explain access as reachable market/treatment availability, not clinical eligibility.
 - Use "aggregated patient-flow signals" rather than "patient-level data."
 - Use simple, professional, client-ready language.
-- Explain P10 as conservative planning case, P50 as expected planning case, and P90 as upside planning case.
+- Explain P10 as conservative planning case, P50 as median central planning case, and P90 as upside planning case.
+- Do not call P50 the "most likely" outcome; a median is not necessarily the mode.
 - If evidence is insufficient, say what is missing.
 
 STRUCTURED SCENARIO OUTPUT:
